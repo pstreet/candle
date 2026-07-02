@@ -2518,6 +2518,7 @@ pub fn matmul<T: GgmlType>(
 }
 
 #[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "dotprod")]
 pub(crate) fn matmul_q4k_x8(
     (m, k, n): (usize, usize, usize),
     lhs: &[f32],
