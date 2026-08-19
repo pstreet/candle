@@ -369,7 +369,17 @@ impl CudaDevice {
         }
         drop(ms);
         let mut ms = self.modules.write().unwrap();
-        let cuda_module = self.context.load_module(mdl.ptx().into()).w()?;
+        let ptx: cudarc::nvrtc::Ptx = {
+            #[cfg(feature = "rocm")]
+            {
+                cudarc::nvrtc::Ptx::from_binary(mdl.ptx_bytes().to_vec())
+            }
+            #[cfg(not(feature = "rocm"))]
+            {
+                cudarc::nvrtc::Ptx::from(mdl.ptx())
+            }
+        };
+        let cuda_module = self.context.load_module(ptx).w()?;
         ms.mdls[mdl.index()] = Some(cuda_module.clone());
         let func = cuda_module.load_function(fn_name).w()?;
         Ok(CudaFunc {

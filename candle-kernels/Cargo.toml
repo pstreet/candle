@@ -3,11 +3,17 @@ name = "candle-kernels"
 version = "0.11.0"
 edition = "2021"
 
-description = "CUDA kernels for Candle"
+description = "CUDA/ROCm kernels for Candle"
 repository = "https://github.com/huggingface/candle"
 keywords = ["blas", "tensor", "machine-learning"]
 categories = ["science"]
 license = "MIT OR Apache-2.0"
+
+[features]
+default = []
+# Build the kernels with the local ROCm/HIP toolchain (hipcc) instead of the
+# CUDA toolchain (cudaforge/nvcc). Enabled via candle-core's `rocm` feature.
+rocm = []
 
 [dependencies]
 

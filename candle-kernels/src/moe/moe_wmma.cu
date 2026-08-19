@@ -271,8 +271,12 @@ extern "C" void moe_gemm_wmma(
         if (is_prefill) {
             LAUNCH_MOE_WMMA(half, 16, 16, 2)
         } else {
+#ifdef USE_ROCM
+            LAUNCH_MOE_WMMA(half, 16, 16, 2)
+#else
             // we use smaller M_tile and larger N_tile for decoding
             LAUNCH_MOE_WMMA(half, 8, 32, 1)
+#endif
         }
     }
 #ifndef NO_BF16_KERNEL
@@ -280,7 +284,11 @@ extern "C" void moe_gemm_wmma(
         if (is_prefill) {
             LAUNCH_MOE_WMMA(nv_bfloat16, 16, 16, 2)
         } else {
+#ifdef USE_ROCM
+            LAUNCH_MOE_WMMA(nv_bfloat16, 16, 16, 2)
+#else
             LAUNCH_MOE_WMMA(nv_bfloat16, 8, 32, 1)
+#endif
         }
     }
 #endif

@@ -1,0 +1,17 @@
+[package]
+name = "cudarc-hip"
+version.workspace = true
+edition.workspace = true
+description = "CUDA-compatible API surface over the HIP (ROCm) runtime, for use with candle."
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+license.workspace = true
+
+[dependencies]
+half = { workspace = true }
+float8 = { workspace = true }
+
+[lib]
+name = "cudarc_hip"
+path = "src/lib.rs"

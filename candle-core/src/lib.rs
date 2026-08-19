@@ -55,7 +55,7 @@ pub mod conv;
 mod convert;
 pub mod cpu;
 pub mod cpu_backend;
-#[cfg(feature = "cuda")]
+#[cfg(any(feature = "cuda", feature = "rocm"))]
 pub mod cuda_backend;
 mod custom_op;
 mod device;
@@ -110,10 +110,10 @@ pub use strided_index::{StridedBlocks, StridedIndex};
 pub use tensor::{Tensor, TensorId};
 pub use variable::Var;
 
-#[cfg(feature = "cuda")]
+#[cfg(any(feature = "cuda", feature = "rocm"))]
 pub use cuda_backend as cuda;
 
-#[cfg(not(feature = "cuda"))]
+#[cfg(not(any(feature = "cuda", feature = "rocm")))]
 pub use dummy_cuda_backend as cuda;
 
 pub use cuda::{CudaDevice, CudaStorage};
@@ -129,6 +129,11 @@ extern crate intel_mkl_src;
 
 #[cfg(feature = "accelerate")]
 extern crate accelerate_src;
+
+// Under `rocm`, `cudarc-hip` (`cudarc_hip`) re-implements the `cudarc` surface
+// over HIP; alias it so the GPU backend needs no source changes.
+#[cfg(feature = "rocm")]
+pub extern crate cudarc_hip as cudarc;
 
 pub trait ToUsize2 {
     fn to_usize2(self) -> (usize, usize);

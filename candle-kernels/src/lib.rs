@@ -32,11 +32,13 @@ pub const ALL_IDS: [Id; 11] = [
     Id::Unary,
 ];
 
+#[cfg(not(feature = "rocm"))]
 pub struct Module {
     index: usize,
     ptx: &'static str,
 }
 
+#[cfg(not(feature = "rocm"))]
 impl Module {
     pub fn index(&self) -> usize {
         self.index
@@ -44,6 +46,33 @@ impl Module {
 
     pub fn ptx(&self) -> &'static str {
         self.ptx
+    }
+
+    pub fn ptx_bytes(&self) -> &'static [u8] {
+        self.ptx.as_bytes()
+    }
+}
+
+#[cfg(feature = "rocm")]
+pub struct Module {
+    index: usize,
+    data: &'static [u8],
+}
+
+#[cfg(feature = "rocm")]
+impl Module {
+    pub fn index(&self) -> usize {
+        self.index
+    }
+
+    /// The compiled amdgcn ELF image for this kernel.
+    pub fn ptx_bytes(&self) -> &'static [u8] {
+        self.data
+    }
+
+    /// ELF bytes are not textual; provided for call-site compatibility.
+    pub fn ptx(&self) -> &'static str {
+        std::str::from_utf8(self.data).unwrap_or("")
     }
 }
 
@@ -58,11 +87,22 @@ const fn module_index(id: Id) -> usize {
     panic!("id not found")
 }
 
+#[cfg(not(feature = "rocm"))]
 macro_rules! mdl {
     ($cst:ident, $id:ident) => {
         pub const $cst: Module = Module {
             index: module_index(Id::$id),
             ptx: ptx::$cst,
+        };
+    };
+}
+
+#[cfg(feature = "rocm")]
+macro_rules! mdl {
+    ($cst:ident, $id:ident) => {
+        pub const $cst: Module = Module {
+            index: module_index(Id::$id),
+            data: ptx::$cst,
         };
     };
 }

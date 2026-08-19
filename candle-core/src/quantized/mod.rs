@@ -23,13 +23,13 @@ pub mod tokenizer;
 mod metal {
     pub use super::dummy_metal::*;
 }
-#[cfg(feature = "cuda")]
+#[cfg(any(feature = "cuda", feature = "rocm"))]
 pub mod cuda;
-#[cfg(feature = "cuda")]
+#[cfg(any(feature = "cuda", feature = "rocm"))]
 pub mod fast_mmq;
-#[cfg(feature = "cuda")]
+#[cfg(any(feature = "cuda", feature = "rocm"))]
 pub mod fast_mmvq;
-#[cfg(not(feature = "cuda"))]
+#[cfg(not(any(feature = "cuda", feature = "rocm")))]
 mod cuda {
     pub use super::dummy_cuda::*;
 }
@@ -264,7 +264,7 @@ impl QStorage {
         }
     }
 
-    #[cfg(feature = "cuda")]
+    #[cfg(any(feature = "cuda", feature = "rocm"))]
     pub fn device_ptr_with_guard<'a>(
         &'a self,
         stream: &'a crate::cuda_backend::cudarc::driver::CudaStream,
@@ -796,7 +796,7 @@ impl QTensor {
         }
     }
 
-    #[cfg(feature = "cuda")]
+    #[cfg(any(feature = "cuda", feature = "rocm"))]
     pub fn device_ptr_with_guard<'a>(
         &'a self,
         stream: &'a crate::cuda_backend::cudarc::driver::CudaStream,
