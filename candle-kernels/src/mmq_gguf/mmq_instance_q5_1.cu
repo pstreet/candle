@@ -121,6 +121,9 @@ extern "C" void launch_mmq_gguf_q5_1(
     int64_t stride_row_x, int64_t stride_col_dst,
     int cc, int nsm, int64_t smpbo, int warp_size_host,
     void *stream) {
+#ifdef CANDLE_MMq_HOST_CC
+    cc = CANDLE_MMq_HOST_CC; // host launch decisions track the fixed device arch (see cuda_runtime.h)
+#endif
 
     const bool use_stream_k = (GGML_CUDA_CC_IS_NVIDIA(cc) && ggml_cuda_highest_compiled_arch(cc) >= GGML_CUDA_CC_VOLTA);
 

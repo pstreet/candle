@@ -190,7 +190,7 @@ pub fn moe_gemm_gguf(
         experts_ids: &Tensor,
         topk: usize,
         is_prefill: bool,
-        dtype: DType,
+        _dtype: DType,
     ) -> Result<Tensor> {
         let (mut size_m, size_k) = input.dims2()?;
         if topk_weights.is_none() {
@@ -253,6 +253,10 @@ pub fn moe_gemm_gguf(
         assert!(size_k % 8 == 0, "size_k must divisible by 8");
         unsafe {
             if is_prefill {
+                // The WMMA prefill kernel is built with NO_BF16_KERNEL on ROCm,
+                // which silently drops bf16 launches; f16 input/output is always
+                // available, so cast to it up front.
+                let dtype = DType::F16;
                 let input = input.to_dtype(dtype)?;
                 let (input, _) = input.storage_and_layout();
                 let (input_ptr, input_dtype) = match &*input {

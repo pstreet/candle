@@ -221,25 +221,37 @@ fn main() -> anyhow::Result<()> {
     let start = std::time::Instant::now();
     let device = candle_examples::device(args.cpu)?;
 
-    let mut model = {
-        let model = gguf_file::Content::read(&mut file).map_err(|e| e.with_path(model_path))?;
+    let (mut model, gguf_tokenizer) = {
+        let content = gguf_file::Content::read(&mut file).map_err(|e| e.with_path(model_path))?;
         let mut total_size_in_bytes = 0;
-        for tensor in model.tensor_infos.values() {
+        for tensor in content.tensor_infos.values() {
             let elem_count = tensor.shape.elem_count();
             total_size_in_bytes +=
                 elem_count * tensor.ggml_dtype.type_size() / tensor.ggml_dtype.block_size();
         }
         println!(
             "loaded {:?} tensors ({}) in {:.2}s",
-            model.tensor_infos.len(),
+            content.tensor_infos.len(),
             format_size(total_size_in_bytes),
             start.elapsed().as_secs_f32(),
         );
-        Qwen3_MoE::from_gguf(model, &mut file, &device, dtype)?
+        // GGUF files embed their tokenizer in the metadata; prefer it so no
+        // separate tokenizer.json is required.
+        let gguf_tokenizer =
+            candle::quantized::tokenizer::TokenizerFromGguf::from_gguf(&content).ok();
+        let model = Qwen3_MoE::from_gguf(content, &mut file, &device, dtype)?;
+        (model, gguf_tokenizer)
     };
     println!("model built");
 
-    let tokenizer = args.tokenizer()?;
+    let tokenizer = match (&args.tokenizer, gguf_tokenizer) {
+        (Some(_), _) => args.tokenizer()?,
+        (None, Some(t)) => {
+            println!("using tokenizer embedded in the GGUF");
+            t
+        }
+        (None, None) => args.tokenizer()?,
+    };
     let mut tos = TokenOutputStream::new(tokenizer);
     let prompt_str = args
         .prompt

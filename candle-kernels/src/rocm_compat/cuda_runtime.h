@@ -9,16 +9,26 @@
 #include <hip/hip_fp8.h>
 
 // `__CUDA_ARCH__` is a device-code arch tag used by the CUDA sources' feature
-// gates (e.g. #if __CUDA_ARCH__ >= 750). Mirror CUDA: define it only on the
-// device pass, leaving it undefined for host code so host/device dispatch in the
-// sources works. gfx1151 (RDNA3) supports fp16/bf16/fp8; the non-Turing MMQ
-// fallback is selected by passing CANDLE_ROCM_CUDA_ARCH=600.
-#if defined(__HIP_DEVICE_COMPILE__) && !defined(__CUDA_ARCH__)
+// gates (e.g. #if __CUDA_ARCH__ >= 750). hipcc already defines it from the
+// --offload-arch (e.g. gfx1151 -> 1030), which would silently select the
+// Turing-MMA/ldmatrix code path that the non-Turing kernels are not built for.
+// We therefore force it to the arch the given FFI kernel family was intended to
+// be compiled for (passed as CANDLE_ROCM_CUDA_ARCH), so host launch decisions
+// and the device code path always agree. Defined only on the device pass, leaving
+// it undefined for host code so host/device dispatch in the sources works.
+#if defined(__HIP_DEVICE_COMPILE__)
+  #undef __CUDA_ARCH__
   #ifndef CANDLE_ROCM_CUDA_ARCH
   #define CANDLE_ROCM_CUDA_ARCH 1030
   #endif
   #define __CUDA_ARCH__ CANDLE_ROCM_CUDA_ARCH
 #endif
+// Host-side: the launchers must make their arch decisions (mmq_y, stream-k,
+// shared sizing) using the same fixed arch the kernels were compiled for.
+#ifdef CANDLE_ROCM_CUDA_ARCH
+#define CANDLE_MMq_HOST_CC (CANDLE_ROCM_CUDA_ARCH)
+#endif
+
 
 // BF16 type aliases: the CUDA <cuda_bf16.h> names for HIP's __hip_bfloat16.
 // Defined here (not only in cuda_bf16.h) so any TU that only includes
