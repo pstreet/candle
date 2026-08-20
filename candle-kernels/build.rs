@@ -223,7 +223,7 @@ fn build_rocm_ffis(out_dir: &PathBuf, rocm: &PathBuf, arch: &str) {
         args.extend([
             format!("--offload-arch={arch}"),
             "-std=c++17".to_string(),
-            "-O2".to_string(),
+            "-O3".to_string(),
             "-fPIC".to_string(),
             "-c".to_string(),
             "-o".to_string(),
