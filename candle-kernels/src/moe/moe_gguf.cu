@@ -159,7 +159,11 @@ extern "C" void moe_gemm_gguf(
     int size_n,         // N (output dim)
     int size_k,         // K (input dim)
     int quant_type,     // Q8_0: 0, Q4K: 1, Q2K: 2, Q3k: 3,  Q5K: 4, Q6K: 5,
-    cudaStream_t stream
+    cudaStream_t stream,
+    // Optional pre-allocated q8_1 scratch (bytes as computed by the caller).
+    // When non-null it is used in place of the internal malloc/free pair,
+    // which lets the call run inside a captured graph.
+    void* y_q8_1_scratch
 ) {
     const int QUANTIZE_BLOCK_SIZE = CUDA_QUANTIZE_BLOCK_SIZE;
     const int kx_padded = pad(size_k, MATRIX_ROW_PADDING);
@@ -169,8 +173,12 @@ extern "C" void moe_gemm_gguf(
     dim3 block_dim_quant(QUANTIZE_BLOCK_SIZE, 1, 1);
     int y_size_in_bytes =
         m * (kx_padded / QK8_1 * sizeof(block_q8_1));
-    void* y_q8_1 = nullptr;
-    cudaMallocAsync(&y_q8_1, y_size_in_bytes, stream);
+    bool scratch_mine = false;
+    void* y_q8_1 = y_q8_1_scratch;
+    if (y_q8_1 == nullptr) {
+        cudaMallocAsync(&y_q8_1, y_size_in_bytes, stream);
+        scratch_mine = true;
+    }
     quantize_q8_1<<<grid_dim_quant, block_dim_quant, 0, stream>>>(inputs, y_q8_1, size_k, kx_padded);
 
     const int nWraps = 4;
@@ -212,5 +220,7 @@ extern "C" void moe_gemm_gguf(
         default:
             break;
     }
-    cudaFreeAsync(y_q8_1, stream);
+    if (scratch_mine) {
+        cudaFreeAsync(y_q8_1, stream);
+    }
 }

@@ -5,8 +5,8 @@ use crate::driver::sys::CUstreamCaptureStatus;
 use std::marker::PhantomData;
 use std::ops::RangeBounds;
 use std::os::raw::c_void;
-use std::sync::atomic::{AtomicU8, Ordering};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 
 // ---------------------------------------------------------------------------
 // Marker traits (mirroring cudarc::driver)
@@ -89,6 +89,15 @@ pub struct CudaContext {
     pub(crate) ordinal: usize,
     event_tracking: AtomicU8,
     stream_synchronization: AtomicU8,
+    /// Pre-allocated buffer that graph-capture allocations are carved out of,
+    /// instead of issuing `hipMallocAsync` nodes (which ROCm graphs cannot
+    /// re-launch). Set for the duration of a capture via
+    /// [CudaStream::begin_capture_arena].
+    capture_arena: Mutex<Option<Arc<CudaSlice<u8>>>>,
+    capture_arena_offset: AtomicUsize,
+    /// Running total of bytes handed out by [CudaStream::alloc], useful for
+    /// sizing the capture arena from a dry run.
+    alloc_bytes: AtomicUsize,
 }
 
 unsafe impl Send for CudaContext {}
@@ -110,6 +119,9 @@ impl CudaContext {
             ordinal,
             event_tracking: AtomicU8::new(TRACKING_ON),
             stream_synchronization: AtomicU8::new(TRACKING_ON),
+            capture_arena: Mutex::new(None),
+            capture_arena_offset: AtomicUsize::new(0),
+            alloc_bytes: AtomicUsize::new(0),
         }))
     }
 
@@ -121,10 +133,46 @@ impl CudaContext {
         true
     }
 
-    /// HIP memory allocation/freeing is synchronized through streams here, so
-    /// plain (blocking) frees are used.
+    /// HIP supports stream-ordered (async) allocation and freeing; using them
+    /// keeps frees on the stream instead of synchronizing it, which matters a
+    /// lot for inference performance.
     pub fn has_async_alloc(&self) -> bool {
-        false
+        true
+    }
+
+    /// Running total of bytes handed out by [CudaStream::alloc] since context
+    /// creation. Reset between phases to size the capture arena from a dry run.
+    pub fn alloc_bytes(&self) -> usize {
+        self.alloc_bytes.load(Ordering::Acquire)
+    }
+
+    pub fn reset_alloc_bytes(&self) {
+        self.alloc_bytes.store(0, Ordering::Release);
+    }
+
+    /// Bump-allocate `bytes` from the active capture arena (256-byte aligned).
+    /// Returns the device offset to add to the arena base, or `None` when no
+    /// arena is active. Errors only on overflow of the arena.
+    fn capture_arena_alloc(&self, bytes: usize) -> Result<Option<usize>, DriverError> {
+        let arena = self.capture_arena.lock().unwrap();
+        let arena = match &*arena {
+            Some(a) => a,
+            None => return Ok(None),
+        };
+        let need = (bytes + 255) & !255usize;
+        let offset = self.capture_arena_offset.fetch_add(need, Ordering::AcqRel);
+        if offset + need > arena.len() {
+            return Err(DriverError(sys::HIP_ERROR_OUT_OF_MEMORY));
+        }
+        Ok(Some(offset as u64 as usize))
+    }
+
+    fn capture_arena_base(&self) -> Result<sys::CUdeviceptr, DriverError> {
+        let arena = self.capture_arena.lock().unwrap();
+        match &*arena {
+            Some(a) => Ok(a.cu_device_ptr),
+            None => Err(DriverError(sys::HIP_ERROR_INVALID_VALUE)),
+        }
     }
 
     pub fn device_count() -> Result<i32, DriverError> {
@@ -277,6 +325,7 @@ impl CudaContext {
             inner: Arc::new(StreamInner {
                 ctx: self.clone(),
                 cu_stream: s,
+                capturing: AtomicU8::new(0),
             }),
         }))
     }
@@ -303,6 +352,7 @@ impl CudaContext {
             inner: Arc::new(StreamInner {
                 ctx: self.clone(),
                 cu_stream: std::ptr::null_mut(),
+                capturing: AtomicU8::new(0),
             }),
         })
     }
@@ -386,6 +436,10 @@ impl CudaEvent {
 pub(crate) struct StreamInner {
     pub(crate) ctx: Arc<CudaContext>,
     pub(crate) cu_stream: sys::CUstream,
+    /// Whether this stream is currently in a graph capture. Allocations made
+    /// while capturing are owned by the resulting graph (their memory is
+    /// released when the graph exec is destroyed), not by the host.
+    pub(crate) capturing: AtomicU8,
 }
 
 impl Drop for StreamInner {
@@ -466,6 +520,81 @@ impl CudaStream {
 
     // -- Memory allocation & copies -----------------------------------------
 
+    /// True while this stream is in a graph capture (local, not HIP, state).
+    pub fn is_capturing(&self) -> bool {
+        self.inner.capturing.load(Ordering::Relaxed) != 0
+    }
+
+    /// Begin capturing this stream into a graph. All kernel launches, copies
+    /// and (stream-ordered) allocations issued on this stream afterwards are
+    /// recorded. [Self::end_capture] turns the result into a graph.
+    ///
+    /// In this (memory-pool) mode allocations inside the capture become
+    /// `hipMallocAsync` graph nodes. ROCm graphs containing such nodes can
+    /// only be launched once, so for graphs that must be replayed use
+    /// [Self::begin_capture_arena] instead.
+    pub fn begin_capture(&self) -> Result<(), DriverError> {
+        *self.inner.ctx.capture_arena.lock().unwrap() = None;
+        self.inner
+            .ctx
+            .capture_arena_offset
+            .store(0, Ordering::Relaxed);
+        self.begin_capture_common()
+    }
+
+    /// Begin capturing with a pre-allocated arena. All allocations made while
+    /// capturing are carved out of `arena` (a plain `hipMalloc` buffer created
+    /// before the capture), so the resulting graph contains no allocation
+    /// nodes and can be re-launched any number of times. `arena` must stay
+    /// valid until the returned graph exec is dropped.
+    pub fn begin_capture_arena(&self, arena: Arc<CudaSlice<u8>>) -> Result<(), DriverError> {
+        let mut g = self.inner.ctx.capture_arena.lock().unwrap();
+        *g = Some(arena);
+        drop(g);
+        self.inner
+            .ctx
+            .capture_arena_offset
+            .store(0, Ordering::Relaxed);
+        self.begin_capture_common()
+    }
+
+    fn begin_capture_common(&self) -> Result<(), DriverError> {
+        self.end_capture_abort_if_active()?;
+        self.inner.ctx.bind_to_thread()?;
+        unsafe {
+            result::begin_capture(self.inner.cu_stream, sys::CU_STREAM_CAPTURE_MODE_GLOBAL)?;
+        }
+        self.inner.capturing.store(1, Ordering::Relaxed);
+        Ok(())
+    }
+
+    fn end_capture_abort_if_active(&self) -> Result<(), DriverError> {
+        if self.inner.capturing.load(Ordering::Relaxed) != 0 {
+            // A capture is in flight but we lost track of it; stop capturing so
+            // that `hipStreamEndCapture` below does not return a stale graph.
+            self.inner.capturing.store(0, Ordering::Relaxed);
+        }
+        Ok(())
+    }
+
+    /// End the capture begun by [Self::begin_capture], instantiating the
+    /// captured work into an executable graph bound to this stream.
+    pub fn end_capture(&self) -> Result<Arc<CudaGraphExec>, DriverError> {
+        if self.inner.capturing.load(Ordering::Relaxed) == 0 {
+            return Err(DriverError(sys::HIP_ERROR_INVALID_VALUE));
+        }
+        self.inner.capturing.store(0, Ordering::Relaxed);
+        let mut graph: sys::CUgraph = std::ptr::null_mut();
+        self.inner.ctx.bind_to_thread()?;
+        unsafe { result::end_capture(self.inner.cu_stream, &mut graph) }?;
+        let arena = self.inner.ctx.capture_arena.lock().unwrap().take();
+        let g = CudaGraph {
+            graph,
+            ctx: self.inner.ctx.clone(),
+        };
+        g.instantiate(Arc::new(self.clone()), arena)
+    }
+
     pub unsafe fn alloc<T: DeviceRepr>(&self, len: usize) -> Result<CudaSlice<T>, DriverError> {
         if len == 0 {
             let mut empty = CudaSlice::new_empty(Arc::new(self.clone()))?;
@@ -474,13 +603,30 @@ impl CudaStream {
             return Ok(empty);
         }
         self.inner.ctx.bind_to_thread()?;
-        let ptr = result::alloc(len * std::mem::size_of::<T>())?;
+        let bytes = len * std::mem::size_of::<T>();
+        self.inner
+            .ctx
+            .alloc_bytes
+            .fetch_add(bytes, Ordering::Release);
+        let ptr = if self.is_capturing() {
+            match self.inner.ctx.capture_arena_alloc(bytes)? {
+                Some(offset) => self.inner.ctx.capture_arena_base()? + offset as u64,
+                None => result::alloc_async(bytes, self.inner.cu_stream)?,
+            }
+        } else if self.inner.ctx.has_async_alloc() {
+            result::alloc_async(bytes, self.inner.cu_stream)?
+        } else {
+            result::alloc(bytes)?
+        };
         let events = self.new_slice_events()?;
         Ok(CudaSlice {
             cu_device_ptr: ptr,
             len,
             read: events.read,
             write: events.write,
+            // Memory allocated while capturing belongs to the graph; the host
+            // must not free it, so mark the slice as graph-owned (no-op drop).
+            graph_owned: self.is_capturing(),
             stream: Arc::new(self.clone()),
             marker: PhantomData,
         })
@@ -630,6 +776,12 @@ impl CudaStream {
     }
 
     fn new_slice_events(&self) -> Result<SliceEvents, DriverError> {
+        if !self.inner.ctx.is_event_tracking() {
+            return Ok(SliceEvents {
+                read: None,
+                write: None,
+            });
+        }
         Ok(SliceEvents {
             read: Some(self.record_event(0)?),
             write: Some(self.record_event(0)?),
@@ -648,6 +800,9 @@ pub struct CudaSlice<T> {
     pub(crate) read: Option<Arc<CudaEvent>>,
     pub(crate) write: Option<Arc<CudaEvent>>,
     pub(crate) stream: Arc<CudaStream>,
+    /// True for memory allocated during a graph capture: it is owned by the
+    /// graph (freed when the graph exec is destroyed), so the host drop is a no-op.
+    pub(crate) graph_owned: bool,
     pub(crate) marker: PhantomData<*const T>,
 }
 
@@ -662,6 +817,11 @@ struct SliceEvents {
 
 impl<T> Drop for CudaSlice<T> {
     fn drop(&mut self) {
+        // Memory allocated inside a graph capture is released with the graph;
+        // the host must not free it again.
+        if self.graph_owned {
+            return;
+        }
         let ctx = &self.stream.inner.ctx;
         if let Some(read) = self.read.as_ref() {
             ctx.record_err(self.stream.wait(read));
@@ -687,6 +847,7 @@ impl<T> CudaSlice<T> {
             len: 0,
             read: None,
             write: None,
+            graph_owned: false,
             stream,
             marker: PhantomData,
         })
@@ -843,6 +1004,23 @@ impl<'a, T> CudaView<'a, T> {
     #[inline]
     fn clone_view(&self) -> CudaView<'a, T> {
         CudaView {
+            ptr: self.ptr,
+            len: self.len,
+            read: self.read,
+            write: self.write,
+            stream: self.stream,
+            marker: PhantomData,
+        }
+    }
+
+    /// Reinterpret this view as a mutable one, allowing in-place writes
+    /// (e.g. `memcpy_htod`) through an immutable borrow.
+    ///
+    /// # Safety
+    /// The caller must guarantee that no other view writes concurrently and
+    /// that ordering on the stream is otherwise respected.
+    pub unsafe fn as_mut_view(&self) -> CudaViewMut<'a, T> {
+        CudaViewMut {
             ptr: self.ptr,
             len: self.len,
             read: self.read,
@@ -1431,3 +1609,84 @@ impl<'a, T> Iterator for ChunksExactMut<'a, T> {
     }
 }
 impl<'a, T> ExactSizeIterator for ChunksExactMut<'a, T> {}
+
+// ---------------------------------------------------------------------------
+// Graph capture
+// ---------------------------------------------------------------------------
+
+/// A graph template produced by [CudaStream::end_capture]. Instantiate it once
+/// to get a [CudaGraphExec] that can be replayed any number of times.
+#[derive(Debug)]
+pub struct CudaGraph {
+    graph: sys::CUgraph,
+    ctx: Arc<CudaContext>,
+}
+
+impl CudaGraph {
+    /// Compile the captured work into an executable graph bound to `stream`.
+    ///
+    /// The template is consumed and destroyed by this call; the executable
+    /// owns the captured allocations and releases them when dropped.
+    pub fn instantiate(
+        self,
+        stream: Arc<CudaStream>,
+        arena: Option<Arc<CudaSlice<u8>>>,
+    ) -> Result<Arc<CudaGraphExec>, DriverError> {
+        self.ctx.bind_to_thread()?;
+        let mut exec: sys::CUgraphExec = std::ptr::null_mut();
+        let res = unsafe { result::graph_instantiate(&mut exec, self.graph) };
+        let destroy_template = || unsafe {
+            let _ = result::graph_destroy(self.graph);
+        };
+        if let Err(e) = res {
+            self.ctx.bind_to_thread().ok();
+            destroy_template();
+            return Err(e);
+        }
+        self.ctx.bind_to_thread().ok();
+        destroy_template();
+        Ok(Arc::new(CudaGraphExec {
+            exec,
+            stream,
+            ctx: self.ctx.clone(),
+            arena,
+        }))
+    }
+}
+
+/// An executable graph captured from a stream. Replaying it re-runs the exact
+/// captured kernels and stream-ordered allocations with the same device
+/// pointers, which collapses thousands of per-op launches into one.
+#[derive(Debug, Clone)]
+pub struct CudaGraphExec {
+    exec: sys::CUgraphExec,
+    stream: Arc<CudaStream>,
+    ctx: Arc<CudaContext>,
+    /// Arena the captured allocations were carved out of (arena-capture mode);
+    /// must outlive every replay and is released when the last exec handle
+    /// drops.
+    arena: Option<Arc<CudaSlice<u8>>>,
+}
+
+impl CudaGraphExec {
+    /// The stream this graph was captured from and is replayed on.
+    pub fn stream(&self) -> &Arc<CudaStream> {
+        &self.stream
+    }
+
+    /// Launch the captured work on the owning stream.
+    pub fn launch(&self) -> Result<(), DriverError> {
+        self.ctx.bind_to_thread()?;
+        unsafe { result::graph_launch(self.exec, self.stream.inner.cu_stream) }
+    }
+}
+
+impl Drop for CudaGraphExec {
+    fn drop(&mut self) {
+        self.ctx.bind_to_thread().ok();
+        // All memory allocated inside the captured region is released here.
+        unsafe {
+            let _ = result::graph_exec_destroy(self.exec);
+        }
+    }
+}

@@ -28,12 +28,59 @@ pub unsafe fn alloc(size_bytes: usize) -> Result<sys::CUdeviceptr, DriverError> 
     Ok(ptr)
 }
 
+pub unsafe fn alloc_async(
+    size_bytes: usize,
+    stream: sys::CUstream,
+) -> Result<sys::CUdeviceptr, DriverError> {
+    let mut ptr: sys::CUdeviceptr = 0;
+    check(sys::hipMallocAsync(&mut ptr, size_bytes, stream))?;
+    Ok(ptr)
+}
+
 pub unsafe fn free_sync(ptr: sys::CUdeviceptr) -> Result<(), DriverError> {
     check(sys::hipFree(ptr))
 }
 
 pub unsafe fn free_async(ptr: sys::CUdeviceptr, stream: sys::CUstream) -> Result<(), DriverError> {
     check(sys::hipFreeAsync(ptr, stream))
+}
+
+// -- Stream capture / graphs -------------------------------------------------
+
+pub unsafe fn begin_capture(
+    stream: sys::CUstream,
+    mode: sys::CUstreamCaptureMode,
+) -> Result<(), DriverError> {
+    check(sys::hipStreamBeginCapture(stream, mode))
+}
+
+pub unsafe fn end_capture(
+    stream: sys::CUstream,
+    graph: *mut sys::CUgraph,
+) -> Result<(), DriverError> {
+    check(sys::hipStreamEndCapture(stream, graph))
+}
+
+pub unsafe fn graph_destroy(graph: sys::CUgraph) -> Result<(), DriverError> {
+    check(sys::hipGraphDestroy(graph))
+}
+
+pub unsafe fn graph_instantiate(
+    exec: *mut sys::CUgraphExec,
+    graph: sys::CUgraph,
+) -> Result<(), DriverError> {
+    check(sys::hipGraphInstantiateWithFlags(exec, graph, 0))
+}
+
+pub unsafe fn graph_launch(
+    exec: sys::CUgraphExec,
+    stream: sys::CUstream,
+) -> Result<(), DriverError> {
+    check(sys::hipGraphLaunch(exec, stream))
+}
+
+pub unsafe fn graph_exec_destroy(exec: sys::CUgraphExec) -> Result<(), DriverError> {
+    check(sys::hipGraphExecDestroy(exec))
 }
 
 pub unsafe fn launch_kernel(

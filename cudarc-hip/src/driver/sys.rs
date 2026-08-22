@@ -11,6 +11,14 @@ pub type CUmodule = *mut c_void;
 pub type CUfunction = *mut c_void;
 pub type CUevent = *mut c_void;
 pub type CUevent_flags = c_uint;
+pub type CUgraph = *mut c_void;
+pub type CUgraphExec = *mut c_void;
+pub type CUstreamCaptureMode = c_uint;
+
+// `hipStreamCaptureMode` values (identical to CUDA's `cudaStreamCaptureMode`).
+pub const CU_STREAM_CAPTURE_MODE_GLOBAL: CUstreamCaptureMode = 0;
+pub const CU_STREAM_CAPTURE_MODE_THREAD_LOCAL: CUstreamCaptureMode = 1;
+pub const CU_STREAM_CAPTURE_MODE_RELAXED: CUstreamCaptureMode = 2;
 
 pub const CU_EVENT_DEFAULT: CUevent_flags = 0;
 pub const CU_EVENT_BLOCKING_SYNC: CUevent_flags = 1;
@@ -52,6 +60,7 @@ pub const CU_MEMCPY_DEFAULT: c_int = 4;
 
 pub const HIP_SUCCESS: c_int = 0;
 pub const HIP_ERROR_INVALID_VALUE: c_int = 1;
+pub const HIP_ERROR_OUT_OF_MEMORY: c_int = 2;
 
 #[derive(Debug, Default, Clone, Copy)]
 #[repr(C)]
@@ -76,6 +85,7 @@ extern "C" {
     pub fn hipMemGetInfo(free: *mut usize, total: *mut usize) -> c_int;
 
     pub fn hipMalloc(ptr: *mut CUdeviceptr, sizeInBytes: usize) -> c_int;
+    pub fn hipMallocAsync(dev_ptr: *mut CUdeviceptr, size: usize, stream: CUstream) -> c_int;
     pub fn hipFree(ptr: CUdeviceptr) -> c_int;
     pub fn hipFreeAsync(ptr: CUdeviceptr, stream: CUstream) -> c_int;
     pub fn hipMemcpy(
@@ -104,6 +114,18 @@ extern "C" {
     pub fn hipStreamSynchronize(stream: CUstream) -> c_int;
     pub fn hipStreamWaitEvent(stream: CUstream, event: CUevent, flags: c_uint) -> c_int;
     pub fn hipStreamIsCapturing(stream: CUstream, capture_status: *mut i32) -> c_int;
+
+    // Stream capture / graphs.
+    pub fn hipStreamBeginCapture(stream: CUstream, mode: CUstreamCaptureMode) -> c_int;
+    pub fn hipStreamEndCapture(stream: CUstream, pGraph: *mut CUgraph) -> c_int;
+    pub fn hipGraphDestroy(graph: CUgraph) -> c_int;
+    pub fn hipGraphInstantiateWithFlags(
+        pGraphExec: *mut CUgraphExec,
+        graph: CUgraph,
+        flags: u64,
+    ) -> c_int;
+    pub fn hipGraphLaunch(graphExec: CUgraphExec, stream: CUstream) -> c_int;
+    pub fn hipGraphExecDestroy(graphExec: CUgraphExec) -> c_int;
 
     pub fn hipEventCreate(event: *mut CUevent) -> c_int;
     pub fn hipEventCreateWithFlags(event: *mut CUevent, flags: c_uint) -> c_int;

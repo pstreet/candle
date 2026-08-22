@@ -36,6 +36,8 @@ extern "C" {
         size_k: i32,
         gguf_dtype: i32, // Q8_0: 0, Q4K: 1, Q2K: 2, Q3k: 3,  Q5K: 4, Q6K: 5  (for weights)
         stream: i64,
+        // Optional pre-allocated q8_1 scratch; nullptr to allocate internally.
+        y_q8_1_scratch: *mut c_void,
     );
 
     pub fn moe_gemm_gguf_prefill(

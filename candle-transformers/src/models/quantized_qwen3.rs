@@ -149,6 +149,19 @@ impl RotaryEmbedding {
         let end = start + self.half_d;
         (&self.cos_f32[start..end], &self.sin_f32[start..end])
     }
+
+    /// Graph-safe cos/sin rows: the position is read from the device-side
+    /// `pos_idx` tensor (shape `[1]`, integer dtype) at replay time rather than
+    /// baked into kernel arguments or tensor layouts, so the returned tensors
+    /// keep a stable shape/layout across graph replays.
+    pub fn cos_sin_gather(&self, pos_idx: &Tensor) -> Result<(Tensor, Tensor)> {
+        // `gather` needs a same-rank contiguous index; broadcast the scalar
+        // position across the row and materialize it once.
+        let idx = pos_idx.broadcast_as((1, self.half_d))?.contiguous()?;
+        let cos = self.cos.gather(&idx, 0)?;
+        let sin = self.sin.gather(&idx, 0)?;
+        Ok((cos, sin))
+    }
 }
 
 #[derive(Debug, Clone)]

@@ -46,6 +46,7 @@ candle-ug = { workspace = true, optional = true }
 anyhow = { workspace = true }
 clap = { workspace = true }
 criterion = { workspace = true }
+half = { workspace = true }
 
 [features]
 default = []

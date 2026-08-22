@@ -100,6 +100,16 @@ struct Args {
 
     #[arg(long, default_value = "bf16")]
     dtype: String,
+
+    /// Capture the decode step into a CUDA/HIP graph and replay it per token.
+    /// GPU-only; ignores itself on CPU runs with a warning.
+    #[arg(long)]
+    graph: bool,
+
+    /// Maximum sequence length the graph decode path supports (defaults to
+    /// prompt + sample length + 32).
+    #[arg(long)]
+    max_seq: Option<usize>,
 }
 
 impl Args {
@@ -181,6 +191,22 @@ fn format_size(size_in_bytes: usize) -> String {
     } else {
         format!("{:.2}GB", size_in_bytes as f64 / 1e9)
     }
+}
+
+/// Overwrite the (single) u32 in a CUDA device tensor in place with no new
+/// device allocation, so it can be shared with a captured graph.
+fn h2d_copy_u32(t: &Tensor, v: u32) -> anyhow::Result<()> {
+    use candle::Storage;
+    let (s, _l) = t.storage_and_layout();
+    match &*s {
+        Storage::Cuda(c) => {
+            let slice = c.as_cuda_slice::<u32>()?;
+            let mut view = unsafe { slice.as_view().as_mut_view() };
+            c.device.memcpy_htod(&[v], &mut view)?;
+        }
+        _ => anyhow::bail!("expected a CUDA tensor for in-place u32 update"),
+    }
+    Ok(())
 }
 
 fn main() -> anyhow::Result<()> {
@@ -318,31 +344,150 @@ fn main() -> anyhow::Result<()> {
 
     let start_post_prompt = std::time::Instant::now();
 
-    let mut sampled = 0;
-    for index in 0..to_sample {
-        let input = Tensor::new(&[next_token], &device)?.unsqueeze(0)?;
-        let logits = model.forward(&input, tokens.len() + index)?;
-        let logits = logits.squeeze(0)?;
-        let logits = if args.repeat_penalty == 1. {
-            logits
+    let penalty_fn = |logits: &Tensor, all_tokens: &Vec<u32>| -> candle::Result<Tensor> {
+        if args.repeat_penalty == 1. {
+            Ok(logits.clone())
         } else {
             let start_at = all_tokens.len().saturating_sub(args.repeat_last_n);
             candle_transformers::utils::apply_repeat_penalty(
-                &logits,
+                logits,
                 args.repeat_penalty,
                 &all_tokens[start_at..],
-            )?
-        };
-        next_token = logits_processor.sample(&logits)?;
-        all_tokens.push(next_token);
-        if let Some(t) = tos.next_token(next_token)? {
-            print!("{t}");
-            std::io::stdout().flush()?;
+            )
         }
-        sampled += 1;
-        if next_token == eos_token {
-            break;
+    };
+
+    let mut sampled = 0;
+
+    if args.graph {
+        let cuda_dev = match device.as_cuda_device() {
+            Ok(d) => Some(d),
+            Err(_) => {
+                eprintln!("warning: --graph ignored, device is not a CUDA device");
+                None
+            }
         };
+        if let Some(cuda_dev) = cuda_dev {
+            let max_seq = args.max_seq.unwrap_or(tokens.len() + to_sample + 32);
+            let base = tokens.len();
+            model.prepare_graph(max_seq)?;
+
+            // Stable input buffers: the embedding gather and every
+            // position-dependent op in the graph read from these, so updating
+            // them with H2D copies between replays is all that's needed.
+            let input = Tensor::new(&[next_token], &device)?.unsqueeze(0)?;
+            let pos_idx = Tensor::new(&[base as u32], &device)?;
+
+            let mut pos = base;
+            // With the HTOD cache enabled, host parameter vectors (kernel dim
+            // & stride tables) are staged into persistent device buffers on
+            // first use (warm-up), so the captured graph performs no host->
+            // device copies: baking a copy of a temporary host buffer into a
+            // graph node dangles when the graph replays.
+            let _htod_guard = cuda_dev.enable_cuda_graph_htod_cache();
+
+            // CANDLE_GRAPH_EAGER=1: run the graph-safe forward eagerly (no
+            // capture) to isolate graph capture issues.
+            if let Ok(v) = std::env::var("CANDLE_GRAPH_EAGER") {
+                eprintln!("CANDLE_GRAPH_EAGER={v}: no-capture diagnostic mode");
+                for _ in 0..to_sample {
+                    let logits = model.forward_graph(&input, &pos_idx)?.squeeze(0)?;
+                    let logits = penalty_fn(&logits, &all_tokens)?;
+                    let next_token = logits_processor.sample(&logits)?;
+                    all_tokens.push(next_token);
+                    if let Some(t) = tos.next_token(next_token)? {
+                        print!("{t}");
+                        std::io::stdout().flush()?;
+                    }
+                    sampled += 1;
+                    if next_token == eos_token {
+                        break;
+                    }
+                    h2d_copy_u32(&input, next_token)?;
+                    pos += 1;
+                    h2d_copy_u32(&pos_idx, pos as u32)?;
+                }
+            } else {
+                // Eager warm-up step at position `base`: exercises every kernel
+                // (JIT loads, BLAS workspaces, graph-safe state) before capture
+                // and doubles as the measurement run that sizes the capture
+                // arena. Yields the first graph-path token.
+                cuda_dev.reset_alloc_counter();
+                let logits = model.forward_graph(&input, &pos_idx)?.squeeze(0)?;
+                let logits = penalty_fn(&logits, &all_tokens)?;
+                let next_token = logits_processor.sample(&logits)?;
+                all_tokens.push(next_token);
+                if let Some(t) = tos.next_token(next_token)? {
+                    print!("{t}");
+                    std::io::stdout().flush()?;
+                }
+                sampled += 1;
+                let mut done = next_token == eos_token;
+
+                // Write the next request and capture the decode step.
+                if !done {
+                    let budget = cuda_dev.alloc_counter();
+                    let arena_bytes = budget * 2 + 4 * 1024 * 1024;
+                    let arena = cuda_dev.graph_capture_arena(arena_bytes)?;
+                    eprintln!("capture arena: {budget} bytes measured, {arena_bytes} reserved");
+                    h2d_copy_u32(&input, next_token)?;
+                    pos += 1;
+                    h2d_copy_u32(&pos_idx, pos as u32)?;
+                    cuda_dev.start_graph_capture_arena(&arena)?;
+                    let logits = model.forward_graph(&input, &pos_idx)?.squeeze(0)?;
+                    let exec = cuda_dev.end_graph_capture()?;
+                    eprintln!("captured decode graph ({max_seq} max seq)");
+                    // ROCm does not guarantee that work recorded during a
+                    // stream capture actually executes while capturing (CUDA
+                    // does), so run the captured step once to produce its
+                    // logits. The step is idempotent under replay (the KV
+                    // scatter overwrites the same row and the mask is rebuilt
+                    // from the unchanged position), so a double execution on a
+                    // driver that does run capture work is harmless.
+                    cuda_dev.replay_graph(&exec)?;
+
+                    let remaining = to_sample.saturating_sub(sampled);
+                    for _ in 0..remaining {
+                        let logits = penalty_fn(&logits, &all_tokens)?;
+                        let next_token = logits_processor.sample(&logits)?;
+                        all_tokens.push(next_token);
+                        if let Some(t) = tos.next_token(next_token)? {
+                            print!("{t}");
+                            std::io::stdout().flush()?;
+                        }
+                        sampled += 1;
+                        if next_token == eos_token {
+                            break;
+                        }
+                        if pos + 1 >= max_seq {
+                            eprintln!("reached max_seq {max_seq}, stopping");
+                            break;
+                        }
+                        h2d_copy_u32(&input, next_token)?;
+                        pos += 1;
+                        h2d_copy_u32(&pos_idx, pos as u32)?;
+                        cuda_dev.replay_graph(&exec)?;
+                    }
+                }
+            }
+        }
+    } else {
+        for index in 0..to_sample {
+            let input = Tensor::new(&[next_token], &device)?.unsqueeze(0)?;
+            let logits = model.forward(&input, tokens.len() + index)?;
+            let logits = logits.squeeze(0)?;
+            let logits = penalty_fn(&logits, &all_tokens)?;
+            next_token = logits_processor.sample(&logits)?;
+            all_tokens.push(next_token);
+            if let Some(t) = tos.next_token(next_token)? {
+                print!("{t}");
+                std::io::stdout().flush()?;
+            }
+            sampled += 1;
+            if next_token == eos_token {
+                break;
+            };
+        }
     }
 
     if let Some(rest) = tos.decode_rest().map_err(candle::Error::msg)? {

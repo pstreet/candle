@@ -294,6 +294,14 @@ pub fn moe_gemm_gguf(
                     _ => candle::bail!("input must be a cuda tensor"),
                 };
 
+                // Pre-allocate the q8_1 quantization scratch on the Rust side and
+                // pass it in, so no stream-ordered allocation happens inside the
+                // FFI call (keeps the decode step capturable into a graph).
+                let kx_padded = (size_k + 511) / 512 * 512;
+                let rows = size_m / if topk_weights.is_none() { topk } else { 1 };
+                let scratch_bytes = rows * (kx_padded / 32) * 36;
+                let scratch = unsafe { dev.alloc::<u8>(scratch_bytes) }?;
+
                 ffi::moe_gemm_gguf(
                     input.device_ptr(input.stream()).0 as *const f32, // [size_m or size_m/topk, size_k]
                     weight_ptr as *const c_void, // [num_experts, size_n, size_k]
@@ -308,6 +316,7 @@ pub fn moe_gemm_gguf(
                     size_k as i32,
                     gguf_dtype as i32, // Q8_0: 0, Q4K: 1, Q2K: 2, Q3k: 3,  Q5K: 4, Q6K: 5 (for weight)
                     stream,
+                    scratch.device_ptr(scratch.stream()).0 as *mut c_void,
                 );
             }
         }

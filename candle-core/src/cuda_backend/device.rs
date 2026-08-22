@@ -94,6 +94,64 @@ impl CudaDevice {
         CudaGraphHtodCacheGuard
     }
 
+    /// Enter graph-capture mode on the device stream. Device work issued after
+    /// this call and before [Self::end_graph_capture] is recorded into a graph
+    /// (kernels, copies and stream-ordered allocations) instead of executing
+    /// eagerly. Allocations made while capturing are owned by the graph.
+    pub fn start_graph_capture(&self) -> Result<()> {
+        // Event tracking creates/waits events per allocation; those are not
+        // safe (or useful) inside a capture, so track nothing while capturing.
+        unsafe { self.disable_event_tracking() };
+        self.stream.begin_capture().w()?;
+        Ok(())
+    }
+
+    /// End the capture begun by [Self::start_graph_capture], returning an
+    /// instantiated [CudaGraphExec] that can be replayed any number of times.
+    pub fn end_graph_capture(&self) -> Result<Arc<cudarc::driver::CudaGraphExec>> {
+        let exec = self.stream.end_capture().w()?;
+        unsafe { self.context.enable_event_tracking() };
+        Ok(exec)
+    }
+
+    /// Replay a captured graph on the device stream.
+    pub fn replay_graph(&self, exec: &cudarc::driver::CudaGraphExec) -> Result<()> {
+        exec.launch().w()?;
+        Ok(())
+    }
+
+    /// Bytes handed out by device allocations since [Self::reset_alloc_counter].
+    pub fn alloc_counter(&self) -> usize {
+        self.context.alloc_bytes()
+    }
+
+    pub fn reset_alloc_counter(&self) {
+        self.context.reset_alloc_bytes()
+    }
+
+    /// Allocate a plain (non-capturing) workspace to replay-capture a decode
+    /// step: with [Self::start_graph_capture_arena], every allocation issued
+    /// while capturing is carved out of `arena` instead of creating
+    /// `hipMallocAsync` graph nodes. ROCm graphs with such nodes can only be
+    /// launched once, so arena capture is required for graphs that replay.
+    pub fn graph_capture_arena(&self, bytes: usize) -> Result<Arc<cudarc::driver::CudaSlice<u8>>> {
+        let slice = unsafe { self.stream.alloc::<u8>(bytes) }.w()?;
+        Ok(Arc::new(slice))
+    }
+
+    /// Enter graph-capture mode, drawing all capture-time allocations from
+    /// `arena` (see [Self::graph_capture_arena]). The buffer outlives the
+    /// capture; it is released when the graph exec from
+    /// [Self::end_graph_capture] is dropped.
+    pub fn start_graph_capture_arena(
+        &self,
+        arena: &Arc<cudarc::driver::CudaSlice<u8>>,
+    ) -> Result<()> {
+        unsafe { self.disable_event_tracking() };
+        self.stream.begin_capture_arena(arena.clone()).w()?;
+        Ok(())
+    }
+
     pub fn memcpy_htod<
         T: cudarc::driver::DeviceRepr + 'static,
         Src: cudarc::driver::HostSlice<T> + ?Sized,

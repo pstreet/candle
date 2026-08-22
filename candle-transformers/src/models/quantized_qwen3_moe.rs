@@ -9,6 +9,18 @@ use candle_nn::kv_cache::ConcatKvCache;
 use candle_nn::Linear;
 use candle_nn::{Embedding, Module};
 use std::sync::Arc;
+
+/// Per-layer state for the graph-captured decode path: fixed-size KV buffers
+/// and the position ruler used to build the attention mask at replay time.
+#[derive(Debug, Clone)]
+struct GraphAttn {
+    /// `(1, n_kv_head, max_seq, head_dim)`, zero-initialized, written in place
+    /// at the device-side position on every replay.
+    kv_k: Tensor,
+    kv_v: Tensor,
+    /// `(1, 1, 1, max_seq)` f32 values `0..max_seq`.
+    arange_row: Tensor,
+}
 #[derive(Debug, Clone)]
 struct Mlp {
     feed_forward_w1: QMatMul,
@@ -56,6 +68,7 @@ pub struct QuantizedAttention {
     rotary_emb: Arc<RotaryEmbedding>,
     dtype: DType,
     kv_cache: ConcatKvCache,
+    graph: Option<GraphAttn>,
 }
 
 impl QuantizedAttention {
@@ -119,6 +132,7 @@ impl QuantizedAttention {
             rotary_emb: rotary_emb.clone(),
             dtype,
             kv_cache,
+            graph: None,
         })
     }
 
@@ -211,6 +225,137 @@ impl QuantizedAttention {
 
         let probs = candle_nn::ops::softmax_last_dim(&scores)?;
         let ctx = probs.matmul(&v)?; // (B, H, L, D)
+        let reshaped_ctx =
+            ctx.transpose(1, 2)?
+                .reshape((b, seq_len, self.n_head * self.head_dim))?;
+
+        self.attention_wo.forward(&reshaped_ctx.to_dtype(in_dtype)?)
+    }
+
+    /// Build the fixed-size state used by [Self::forward_graph]: zero the
+    /// static KV buffers and copy whatever the concat cache already holds
+    /// (the eager prefill + first decode rows) into them.
+    pub fn prepare_graph(&mut self, max_seq: usize, device: &Device) -> Result<()> {
+        let len = self.kv_cache.current_seq_len();
+        if len > max_seq {
+            candle::bail!("graph max_seq {max_seq} too small for {len} cached rows");
+        }
+        let shape = (1, self.n_kv_head, max_seq, self.head_dim);
+        let mut kv_k = Tensor::zeros(shape, self.dtype, device)?;
+        let mut kv_v = Tensor::zeros(shape, self.dtype, device)?;
+        if len > 0 {
+            if let (Some(k), Some(v)) = (self.kv_cache.k(), self.kv_cache.v()) {
+                kv_k.slice_set(k, 2, 0)?;
+                kv_v.slice_set(v, 2, 0)?;
+            }
+        }
+        let arange_row =
+            Tensor::arange(0f32, max_seq as f32, device)?.reshape((1, 1, 1, max_seq))?;
+        self.graph = Some(GraphAttn {
+            kv_k,
+            kv_v,
+            arange_row,
+        });
+        Ok(())
+    }
+
+    /// Decode attention for a single token, capture-friendly: every kernel has
+    /// a position-independent shape/layout/argument set. The sequence position
+    /// is read from the device-side `pos_idx` tensor (shape `[1]`, u32) so it
+    /// can be updated with a host->device copy between replays of the captured
+    /// graph. The KV state is accumulated in the fixed-size buffers built by
+    /// [Self::prepare_graph]; an additive mask computed from `pos_idx` disables
+    /// the rows beyond the current position.
+    pub fn forward_graph(&mut self, x: &Tensor, pos_idx: &Tensor) -> Result<Tensor> {
+        let g = self
+            .graph
+            .as_ref()
+            .expect("graph state not prepared, call prepare_graph first");
+        let (b, seq_len, _) = x.dims3()?;
+        let in_dtype = x.dtype();
+        let q = self.attention_wq.forward(x)?;
+        let k = self.attention_wk.forward(x)?;
+        let v = self.attention_wv.forward(x)?;
+
+        let q = if let Some(bq) = &self.attention_bq {
+            q.broadcast_add(bq)?
+        } else {
+            q
+        };
+        let k = if let Some(bk) = &self.attention_bk {
+            k.broadcast_add(bk)?
+        } else {
+            k
+        };
+        let v = if let Some(bv) = &self.attention_bv {
+            v.broadcast_add(bv)?
+        } else {
+            v
+        };
+
+        let q = q
+            .reshape((1, seq_len, self.n_head, self.head_dim))?
+            .transpose(1, 2)?
+            .contiguous()?;
+        let k = k
+            .reshape((1, seq_len, self.n_kv_head, self.head_dim))?
+            .transpose(1, 2)?
+            .contiguous()?;
+        let v = v
+            .reshape((1, seq_len, self.n_kv_head, self.head_dim))?
+            .transpose(1, 2)?
+            .contiguous()?;
+
+        let (q, k) = if let (Some(q_norm), Some(k_norm)) = (&self.q_norm, &self.k_norm) {
+            let q_flat = q.flatten(0, 2)?;
+            let k_flat = k.flatten(0, 2)?;
+            let q_flat = q_norm.forward(&q_flat)?;
+            let k_flat = k_norm.forward(&k_flat)?;
+            let q = q_flat.reshape((1, self.n_head, seq_len, self.head_dim))?;
+            let k = k_flat.reshape((1, self.n_kv_head, seq_len, self.head_dim))?;
+            (q, k)
+        } else {
+            (q, k)
+        };
+
+        let (q, k, v) = (
+            q.to_dtype(self.dtype)?,
+            k.to_dtype(self.dtype)?,
+            v.to_dtype(self.dtype)?,
+        );
+
+        let (cos, sin) = self.rotary_emb.cos_sin_gather(pos_idx)?;
+        let q = candle_nn::rotary_emb::rope(&q.contiguous()?, &cos, &sin)?;
+        let k = candle_nn::rotary_emb::rope(&k.contiguous()?, &cos, &sin)?;
+
+        // Write the new K/V rows at the device-side position into the static
+        // caches. `scatter_set` indexes by data, so the kernel arguments stay
+        // identical across replays.
+        let idx = pos_idx.broadcast_as(k.shape())?.contiguous()?;
+        g.kv_k.scatter_set(&idx, &k, 2)?;
+        g.kv_v.scatter_set(&idx, &v, 2)?;
+
+        // Attend over the whole static window; rows after the position are
+        // masked out with the position-derived additive mask.
+        let k_full = g.kv_k.clone();
+        let v_full = g.kv_v.clone();
+        let k_rep = repeat_kv(k_full, self.num_kv_groups)?.contiguous()?;
+        let v_rep = repeat_kv(v_full, self.num_kv_groups)?.contiguous()?;
+
+        let scale = 1.0 / (self.head_dim as f64).sqrt();
+        let mut scores = (q.matmul(&k_rep.transpose(2, 3)?)? * scale)?;
+        // Additive position mask: rows after the (device-side) position get
+        // -1e30 and are wiped by the softmax. `cmp` needs equal shapes, so the
+        // scalar position is broadcast to the window shape first.
+        let pos_b = pos_idx
+            .to_dtype(scores.dtype())?
+            .broadcast_as(g.arange_row.shape())?;
+        let invalid = g.arange_row.to_dtype(scores.dtype())?.gt(&pos_b)?;
+        let mask = (invalid.to_dtype(scores.dtype())? * -1e30f64)?;
+        scores = scores.broadcast_add(&mask)?;
+
+        let probs = candle_nn::ops::softmax_last_dim(&scores)?;
+        let ctx = probs.matmul(&v_rep)?;
         let reshaped_ctx =
             ctx.transpose(1, 2)?
                 .reshape((b, seq_len, self.n_head * self.head_dim))?;
@@ -421,6 +566,49 @@ impl GGUFQWenMoE {
             let x = layer.mlp.forward(&x, causal_mask.is_some())?;
             let x = (x + residual)?;
             xs = x
+        }
+
+        let xs = xs.narrow(1, l - 1, 1)?;
+        let xs = self.norm.forward(&xs)?;
+        self.output.forward(&xs)?.to_dtype(DType::F32)?.squeeze(1)
+    }
+
+    /// Build the per-layer graph-decode attention state. Call after the eager
+    /// prefill (and first decode) so the static KV buffers start with the
+    /// rows already computed eagerly.
+    pub fn prepare_graph(&mut self, max_seq: usize) -> Result<()> {
+        for layer in self.layers.iter_mut() {
+            layer.self_attn.prepare_graph(max_seq, &self.device)?;
+        }
+        Ok(())
+    }
+
+    /// Graph-captured decode for a single token. `pos_idx` is a `[1]` u32
+    /// device tensor holding the token's absolute position; it must reference
+    /// a stable buffer whose contents can be updated between graph replays.
+    /// The returned logit refers to a stable device buffer, so it can be read
+    /// back after each replay of the captured graph.
+    pub fn forward_graph(&mut self, x: &Tensor, pos_idx: &Tensor) -> Result<Tensor> {
+        let mut xs = self.tok_embeddings.forward(x)?;
+        let (_b, l) = x.dims2()?;
+        if l != 1 {
+            candle::bail!("graph decode expects a single token, got {l}");
+        }
+
+        for layer in self.layers.iter_mut() {
+            let x = xs;
+            let residual = &x;
+
+            let x = layer.attention_norm.forward(&x)?;
+            let attn = layer.self_attn.forward_graph(&x, pos_idx)?;
+            let x = (attn + residual)?;
+
+            // MLP
+            let residual = &x;
+            let x = layer.ffn_norm.forward(&x)?;
+            let x = layer.mlp.forward(&x, false)?;
+            let x = (x + residual)?;
+            xs = x;
         }
 
         let xs = xs.narrow(1, l - 1, 1)?;
