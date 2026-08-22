@@ -5,6 +5,17 @@ This documents the main changes to the `candle` crate.
 
 ### Added
 
+- ROCm/HIP GPU backend (`--features rocm`) for AMD GPUs, including a HIP port
+  of the `cudarc` driver (`cudarc-hip`) with stream capture/graph support,
+  stream-ordered allocations, and rocBLAS bindings.
+- Graph-captured decoding for the `quantized-qwen3-moe` example via
+  `--graph`/`--max-seq`: the single-token decode step is captured into a
+  CUDA/HIP graph with fixed shapes and replayed per token (roughly 2x faster
+  decode than eager on ROCm). `CANDLE_GRAPH_EAGER=1` runs the same path
+  without capture for debugging.
+- `rocm_basics` (candle-core) and `moe_gguf_check` (candle-examples) examples
+  as GPU smoke/numerical regression checks.
+
 ### Modified
 
 ## v0.3.0 - 2023-10-01

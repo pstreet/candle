@@ -150,6 +150,37 @@ cargo run --example quantized --release
 In order to use **CUDA** add `--features cuda` to the example command line. If
 you have cuDNN installed, use `--features cudnn` for even more speedups.
 
+For **AMD GPUs** add `--features rocm` instead. The ROCm installation must be
+discoverable at build time; point the environment at your ROCm root, e.g. for a
+toolchain under `/opt/rocm`:
+
+```bash
+export PATH=/opt/rocm/bin:$PATH
+export LD_LIBRARY_PATH=/opt/rocm/lib:$LD_LIBRARY_PATH
+export ROCM_HOME=/opt/rocm ROCM_PATH=/opt/rocm CANDLE_ROCM_PATH=/opt/rocm
+```
+
+HIP kernels are compiled by `candle-kernels` (MoE, MMVQ/MMQ and other FFI
+entry points) using the GPU's compute capability, auto-detected via
+`rocm-agent-scanner` when available.
+
+The [quantized-qwen3-moe](./candle-examples/examples/quantized-qwen3-moe/)
+example supports graph-captured decoding on both CUDA and ROCm via `--graph`
+(and an optional `--max-seq` upper bound). The single-token decode step is
+captured once into a graph with fixed shapes and replayed per token, updating
+only the input token and position between replays — roughly 2x faster decode
+than eager execution (31.5 vs 15.0 tok/s for Qwen3-16B-A3B Q4_K_M on an AMD
+Radeon 8060S / gfx1151):
+
+```bash
+cargo run --example quantized-qwen3-moe --release --features rocm -- \
+  --model Qwen3-16B-A3B-Q4_K_M.gguf --prompt "Hello" -n 64 \
+  --temperature 0 --graph --max-seq 256
+```
+
+Set `CANDLE_GRAPH_EAGER=1` to run the same capture-safe code path eagerly,
+without recording a graph — useful for isolating graph capture issues.
+
 There are also some wasm examples for whisper and
 [llama2.c](https://github.com/karpathy/llama2.c). You can either build them with
 `trunk` or try them online:
@@ -211,6 +242,7 @@ If you have an addition to this list, please submit a pull request.
 - Backends.
     - Optimized CPU backend with optional MKL support for x86 and Accelerate for macs.
     - CUDA backend for efficiently running on GPUs, multiple GPU distribution via NCCL.
+    - ROCm/HIP backend for AMD GPUs, with graph-captured decode support (see below).
     - WASM support, run your models in a browser.
 - Included models.
     - Language Models.
@@ -287,11 +319,13 @@ Cheatsheet:
 - [candle-core](./candle-core): Core ops, devices, and `Tensor` struct definition
 - [candle-nn](./candle-nn/): Tools to build real models
 - [candle-examples](./candle-examples/): Examples of using the library in realistic settings
-- [candle-kernels](./candle-kernels/): CUDA custom kernels
+- [candle-kernels](./candle-kernels/): CUDA/HIP custom kernels
 - [candle-datasets](./candle-datasets/): Datasets and data loaders.
 - [candle-transformers](./candle-transformers): transformers-related utilities.
 - [candle-flash-attn](./candle-flash-attn): Flash attention v2 layer.
 - [candle-onnx](./candle-onnx/): ONNX model evaluation.
+- [cudarc-hip](./cudarc-hip/): HIP/ROCm port of the `cudarc` driver used by the
+  ROCm backend (stream capture/graphs, stream-ordered allocations, rocBLAS).
 
 ## FAQ
 
@@ -447,3 +481,33 @@ If you encounter an error like this one `called `Result::unwrap()` on an `Err` v
 `c:\Windows\System32\nvcuda.dll` -> `cuda.dll`
 `c:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.4\bin\cublas64_12.dll` -> `cublas.dll`
 `c:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.4\bin\curand64_10.dll` -> `curand.dll`
+
+#### ROCm: cannot find HIP headers/libraries when building with --features rocm
+
+Builds fail with missing `hip/hip_runtime.h` or unresolved `hipMalloc` symbols
+when the toolchain is not discoverable. Export the ROCm environment described
+in the [examples section](#check-out-our-examples) above before building
+(`ROCM_HOME`, `ROCM_PATH`, `CANDLE_ROCM_PATH`, plus `PATH` and
+`LD_LIBRARY_PATH`). If the compute
+capability cannot be auto-detected (no `rocm-agent-scanner`), set it manually,
+e.g. `CANDLE_ROCM_CUDA_ARCH=1030` for RDNA3.5/gfx1151.
+
+#### ROCm: graph capture errors (HIP error 905 / 900)
+
+`dependency created on uncaptured work in another stream (905)` or
+`operation not permitted when stream is capturing (900)` during a capture mean
+some op issued work outside the captured stream — most commonly a stream-ordered
+allocation baked into the graph. Capture with an arena instead:
+`start_graph_capture_arena` carves capture-time allocations out of a
+pre-allocated buffer so the graph contains no allocation nodes and can be
+re-launched; `CudaDevice::alloc_counter()` sizes the arena from a dry run.
+Note also that ROCm does not guarantee that work recorded during a capture
+executes while capturing, so run the captured step once explicitly after
+`end_graph_capture` before reading its outputs (the quantized-qwen3-moe
+example does this). For general debugging, `HIP_LAUNCH_BLOCKING=1`
+serializes kernel launches.
+
+The `rocm_basics` example under [candle-core](./candle-core/examples/) checks
+the basic GPU ops plus a capture/replay round-trip, and `moe_gguf_check` under
+[candle-examples](./candle-examples/) verifies the MoE/QMatMul FFI kernels
+numerically against CPU references.
