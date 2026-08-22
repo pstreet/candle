@@ -106,9 +106,21 @@ pub unsafe fn launch_kernel(
     ))
 }
 
+pub fn mem_get_info() -> Result<(usize, usize), DriverError> {
+    let (mut free, mut total) = (0usize, 0usize);
+    check(unsafe { sys::hipMemGetInfo(&mut free, &mut total) })?;
+    Ok((free, total))
+}
+
 pub mod device {
     use super::{check, DriverError};
     use crate::driver::sys;
+
+    pub fn get(ordinal: i32) -> Result<sys::CUdevice, DriverError> {
+        let mut dev: sys::CUdevice = 0;
+        check(unsafe { sys::hipDeviceGet(&mut dev, ordinal) })?;
+        Ok(dev)
+    }
 
     pub unsafe fn get_attribute(
         dev: sys::CUdevice,

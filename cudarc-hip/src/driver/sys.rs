@@ -43,6 +43,7 @@ pub enum CUstreamCaptureStatus {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(i32)]
 pub enum CUdevice_attribute {
+    CU_DEVICE_ATTRIBUTE_INTEGRATED = 9,
     CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR = 23,
     CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MINOR = 61,
     CU_DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT = 63,
@@ -80,6 +81,7 @@ extern "C" {
     pub fn hipSetDevice(dev: i32) -> c_int;
     pub fn hipGetDevice(dev: *mut i32) -> c_int;
     pub fn hipGetDeviceCount(count: *mut i32) -> c_int;
+    pub fn hipDeviceGet(dev: *mut CUdevice, ordinal: i32) -> c_int;
     pub fn hipDeviceGetAttribute(pi: *mut i32, attr: i32, deviceId: i32) -> c_int;
     pub fn hipGetDeviceProperties(prop: *mut CUdeviceProp, deviceId: i32) -> c_int;
     pub fn hipMemGetInfo(free: *mut usize, total: *mut usize) -> c_int;

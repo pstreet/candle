@@ -138,6 +138,7 @@ __device__ __forceinline__ int __vsubss4(int a, int b) {
     hipFuncSetAttribute((const void *) (func), (attr), (val))
 #define cudaFuncAttributeMaxDynamicSharedMemorySize hipFuncAttributeMaxDynamicSharedMemorySize
 #define cudaGetLastError hipGetLastError
+#define cudaGetErrorString hipGetErrorString
 #define cudaPeekAtLastError hipPeekAtLastError
 #define cudaDeviceSynchronize hipDeviceSynchronize
 #define cudaDeviceReset hipDeviceReset
@@ -149,6 +150,10 @@ __device__ __forceinline__ int __vsubss4(int a, int b) {
 #define cudaEvent_t hipEvent_t
 #define cudaError_t hipError_t
 #define cudaMemcpyKind hipMemcpyKind
+#define cudaMemcpyDeviceToHost hipMemcpyDeviceToHost
+#define cudaMemcpyHostToDevice hipMemcpyHostToDevice
+#define cudaMemcpyDeviceToDevice hipMemcpyDeviceToDevice
+#define cudaMemcpyHostToHost hipMemcpyHostToHost
 #define cudaHostAllocDefault hipHostAllocDefault
 #define cudaHostAllocPortable hipHostAllocPortable
 #define cudaHostAllocMapped hipHostAllocMapped
