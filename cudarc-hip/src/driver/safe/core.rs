@@ -503,6 +503,19 @@ impl CudaStream {
         self.wait(&ev)
     }
 
+    // Non-owning view over an existing device allocation; drop must not free it.
+    pub unsafe fn upgrade_device_ptr<T: DeviceRepr>(&self, ptr: u64, len: usize) -> CudaSlice<T> {
+        CudaSlice {
+            cu_device_ptr: ptr as sys::CUdeviceptr,
+            len: len / std::mem::size_of::<T>(),
+            read: None,
+            write: None,
+            stream: Arc::new(self.clone()),
+            graph_owned: true,
+            marker: PhantomData,
+        }
+    }
+
     pub fn capture_status(&self) -> Result<CUstreamCaptureStatus, DriverError> {
         let mut status = 0i32;
         self.inner.ctx.bind_to_thread()?;
