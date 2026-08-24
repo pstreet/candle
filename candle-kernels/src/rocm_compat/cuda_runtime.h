@@ -23,9 +23,44 @@
   #endif
   #define __CUDA_ARCH__ CANDLE_ROCM_CUDA_ARCH
 #endif
-// Host-side: the launchers must make their arch decisions (mmq_y, stream-k,
-// shared sizing) using the same fixed arch the kernels were compiled for.
-#ifdef CANDLE_ROCM_CUDA_ARCH
+// Architecture family tags from the actual offload target, mirroring llama.cpp's
+// ggml-cuda vendors/hip.h. The WMMA MMQ paths gate on RDNA3/RDNA4, not on
+// __CUDA_ARCH__ (which is fixed to the fallback arch for those kernels).
+#if defined(__gfx900__) || defined(__gfx906__)
+#define GCN5
+#endif
+#if defined(__gfx950__)
+#define CDNA4
+#endif
+#if defined(__gfx942__)
+#define CDNA3
+#endif
+#if defined(__gfx90a__)
+#define CDNA2
+#endif
+#if defined(__gfx908__)
+#define CDNA1
+#endif
+#if defined(CDNA4) || defined(CDNA3) || defined(CDNA2) || defined(CDNA1)
+#define CDNA
+#endif
+#if defined(__GFX12__)
+#define RDNA4
+#endif
+#if defined(__GFX11__)
+#define RDNA3
+#endif
+#if defined(RDNA4) || defined(RDNA3)
+#define AMD_WMMA_AVAILABLE
+#endif
+// Host-side: the launchers must make their arch decisions (mmq_x, mmq_y,
+// granularity, stream-k) using the cc the kernels were built for. For the MMQ
+// family that is an AMD-encoded cc (0x1000000 | gfxNNNN) so the host predicates
+// (amd_wmma_available etc.) agree with the device path; CANDLE_ROCM_HOST_CC is
+// passed by build.rs and falls back to the fixed device arch.
+#if defined(CANDLE_ROCM_HOST_CC)
+#define CANDLE_MMq_HOST_CC (CANDLE_ROCM_HOST_CC)
+#elif defined(CANDLE_ROCM_CUDA_ARCH)
 #define CANDLE_MMq_HOST_CC (CANDLE_ROCM_CUDA_ARCH)
 #endif
 

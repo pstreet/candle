@@ -7,7 +7,7 @@ static void instantiate_mmq_q6_k(float * tmp_fixup,
     const mmq_args & args, cudaStream_t stream,
     int cc, int nsm, size_t smpbo, int warp_size_host) {
 
-    const int mmq_y = (GGML_CUDA_CC_IS_NVIDIA(cc) && ggml_cuda_highest_compiled_arch(cc) >= GGML_CUDA_CC_VOLTA) ? 128 : 64;
+    const int mmq_y = get_mmq_y_host(cc);
     const int nwarps = 256 / warp_size_host;
     const int nbytes_shared = mmq_get_nbytes_shared<GGML_TYPE_Q6_K>(mmq_x, mmq_y, cc, warp_size_host, nwarps);
     const int nty = (args.nrows_x + mmq_y - 1) / mmq_y;
@@ -77,15 +77,14 @@ static void instantiate_mmq_q6_k(float * tmp_fixup,
 static void launch_mmq_case_q6_k(float * tmp_fixup, const mmq_args & args, cudaStream_t stream,
     int cc, int nsm, size_t smpbo, int warp_size_host) {
 
-    const int mmq_x_max = (turing_mma_available(cc)) ? 128 :
-        (GGML_CUDA_CC_IS_NVIDIA(cc) && ggml_cuda_highest_compiled_arch(cc) >= GGML_CUDA_CC_VOLTA) ? 64 : 64;
-    const int mmq_y = (GGML_CUDA_CC_IS_NVIDIA(cc) && ggml_cuda_highest_compiled_arch(cc) >= GGML_CUDA_CC_VOLTA) ? 128 : 64;
+    const int mmq_x_max = get_mmq_x_max_host(cc);
+    const int mmq_y = get_mmq_y_host(cc);
     const int nwarps = 256 / warp_size_host;
 
     int mmq_x_best = 0;
     int ntiles_x_best = INT_MAX;
     for (int mmq_x = 8; mmq_x <= mmq_x_max && ntiles_x_best > 1; mmq_x += 8) {
-        const int granularity = (turing_mma_available(cc) && mmq_x >= 48) ? 16 : 8;
+        const int granularity = mmq_get_granularity_host(mmq_x, cc);
         if (mmq_x % granularity != 0) continue;
         const size_t nbs = mmq_get_nbytes_shared<GGML_TYPE_Q6_K>(mmq_x, mmq_y, cc, warp_size_host, nwarps);
         if (nbs > smpbo) continue;

@@ -148,12 +148,21 @@ fn rocm_arch() -> String {
         .unwrap_or_else(|| "gfx1151".to_string())
 }
 
+// AMD cc encoding used for host-side launch decisions (mmq_x, mmq_y,
+// granularity). Matches GGML_CUDA_CC_OFFSET_AMD | gfxNNNN in the kernel sources.
+fn amd_host_cc(arch: &str) -> Option<String> {
+    let num = arch.strip_prefix("gfx")?;
+    let gfx: u32 = u32::from_str_radix(num, 16).ok()?;
+    Some(format!("{:#x}", 0x0100_0000 | gfx))
+}
+
 // Statically-linked FFI kernels (moe/mmvq/mmq). Each entry is (source,
 // __CUDA_ARCH__, whether to force-include <mma.h>, whether to define
-// NO_BF16_KERNEL). The two `CANDLE_ROCM_CUDA_ARCH` values select the
-// host/device codepath in the sources: the dense GGUF MMQ kernels only support
-// the non-Turing fallback (Turing `ldmatrix` is unavailable on GCN), so they are
-// built with arch 600; the WMMA MoE kernels use the default (1030).
+// NO_BF16_KERNEL). The `CANDLE_ROCM_CUDA_ARCH` values select the device
+// codepath in the sources: the dense GGUF MMQ kernels keep the non-Turing
+// device arch (600, so `TURING_MMA_AVAILABLE` stays off) but run the RDNA
+// WMMA tile paths, which gate on RDNA3/RDNA4 family tags; the WMMA MoE
+// kernels use the default (1030).
 const FFI_KERNELS: &[(&str, &str, bool, bool)] = &[
     ("src/moe/moe_wmma.cu", "1030", true, true),
     ("src/moe/moe_wmma_gguf.cu", "1030", true, true),
@@ -217,6 +226,14 @@ fn build_rocm_ffis(out_dir: &PathBuf, rocm: &PathBuf, arch: &str) {
         }
         args.push("-DUSE_ROCM".to_string());
         args.push(format!("-DCANDLE_ROCM_CUDA_ARCH={cu_arch}"));
+        if src.starts_with("src/mmq_gguf/") {
+            // MMQ kernels: HIP codepath semantics + AMD-encoded host cc so the
+            // host predicates agree with the WMMA device path on RDNA3/4.
+            args.push("-DGGML_USE_HIP".to_string());
+            if let Some(host_cc) = amd_host_cc(arch) {
+                args.push(format!("-DCANDLE_ROCM_HOST_CC={host_cc}"));
+            }
+        }
         if *no_bf16 {
             args.push("-DNO_BF16_KERNEL".to_string());
         }

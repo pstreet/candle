@@ -304,7 +304,9 @@ static bool fp16_mma_hardware_available(const int cc) {
 }
 
 static bool amd_mfma_available(const int /*cc*/) { return false; } // NVIDIA only
-static bool amd_wmma_available(const int /*cc*/) { return false; } // NVIDIA only
+static bool amd_wmma_available(const int cc) {
+    return GGML_CUDA_CC_IS_AMD(cc) && (GGML_CUDA_CC_IS_RDNA3(cc) || GGML_CUDA_CC_IS_RDNA4(cc));
+}
 
 static bool turing_mma_available(const int cc) {
     return GGML_CUDA_CC_IS_NVIDIA(cc) && ggml_cuda_highest_compiled_arch(cc) >= GGML_CUDA_CC_TURING;
