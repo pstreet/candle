@@ -47,6 +47,23 @@ fn qk_for(dtype: GgmlDType) -> usize {
     }
 }
 
+// Mirrors ggml_cuda_should_use_mmq for the AMD RDNA (WMMA) family: at large batch,
+// dequantize + BLAS beats MMQ for some quant types. Other archs keep MMQ for all batches.
+fn should_use_mmq(dtype: GgmlDType, cc: i32, batch: usize) -> bool {
+    let major = cc / 100;
+    if major != 11 && major != 12 {
+        return true;
+    }
+    if major == 12 {
+        return true;
+    }
+    match dtype {
+        GgmlDType::Q2K => batch <= 128,
+        GgmlDType::Q6K => batch <= 256,
+        _ => true,
+    }
+}
+
 // ds_layout mapping: which Q8_1_mmq scale layout to use per weight type.
 enum DsLayout {
     D4,
@@ -290,6 +307,9 @@ pub fn try_fwd(
     };
 
     let dev = qstorage.device();
+    if !should_use_mmq(w_dtype, get_device_info(dev).cc, b_size) {
+        return Ok(None);
+    }
     let stream = dev.cuda_stream();
     let stream_ptr = stream.cu_stream() as *mut std::ffi::c_void;
 

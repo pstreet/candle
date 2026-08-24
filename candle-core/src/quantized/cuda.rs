@@ -1,7 +1,7 @@
 use super::{GgmlDType, QStorage};
 use crate::quantized::k_quants::GgmlType;
 use crate::{backend::BackendDevice, cuda_backend::WrapErr};
-use crate::{builder_arg as barg, CudaDevice, CudaStorage, Result};
+use crate::{builder_arg as barg, CudaDevice, CudaStorage, DType, Result};
 use half::f16;
 
 use cudarc::driver::{CudaSlice, CudaStream, CudaView, DevicePtr, PushKernelArg, SyncOnDrop};
@@ -959,6 +959,9 @@ impl QCudaStorage {
             let data_f32 = self.dequantize(n * k)?;
             let rhs_l = crate::Layout::new((k, n).into(), vec![1, k], 0).broadcast_as((b, k, n))?;
             storage.matmul(&data_f32, (b, m, n, k), layout, &rhs_l)?
+        } else if b * m > 256 {
+            // Large batch: dequantize weights to F16 and run a hipBLAS GEMM.
+            self.dequantize_matmul_f16(n, k, b, m, storage, layout)?
         } else {
             let storage = storage.as_cuda_slice::<f32>()?;
             let storage = match layout.contiguous_offsets() {
@@ -983,6 +986,25 @@ impl QCudaStorage {
         out_shape.pop();
         out_shape.push(n);
         Ok((out, out_shape.into()))
+    }
+
+    fn dequantize_matmul_f16(
+        &self,
+        n: usize,
+        k: usize,
+        b: usize,
+        m: usize,
+        storage: &CudaStorage,
+        layout: &crate::Layout,
+    ) -> Result<CudaStorage> {
+        use crate::backend::BackendStorage;
+        // F16 accumulation matches llama.cpp's compute type and picks the fast WMMA path on RDNA.
+        crate::cuda_backend::set_gemm_reduced_precision_f16(true);
+        let w_f16 = self.dequantize_f16(n * k)?;
+        let act_f16 = storage.to_dtype(layout, DType::F16)?;
+        let act_l = crate::Layout::contiguous(layout.shape().clone());
+        let rhs_l = crate::Layout::new((k, n).into(), vec![1, k], 0).broadcast_as((b, k, n))?;
+        act_f16.matmul(&w_f16, (b, m, n, k), &act_l, &rhs_l)
     }
 }
 
