@@ -1,5 +1,5 @@
 use super::sys;
-use std::os::raw::c_void;
+use std::os::raw::{c_char, c_int, c_void};
 
 /// Error from a HIP runtime call, mirroring `cudarc::driver::DriverError`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -115,6 +115,7 @@ pub fn mem_get_info() -> Result<(usize, usize), DriverError> {
 pub mod device {
     use super::{check, DriverError};
     use crate::driver::sys;
+    use std::os::raw::{c_char, c_int};
 
     pub fn get(ordinal: i32) -> Result<sys::CUdevice, DriverError> {
         let mut dev: sys::CUdevice = 0;
@@ -129,6 +130,20 @@ pub mod device {
         let mut val = 0i32;
         check(sys::hipDeviceGetAttribute(&mut val, attr as i32, dev))?;
         Ok(val)
+    }
+
+    pub unsafe fn get_name(dev: sys::CUdevice) -> Result<String, DriverError> {
+        let mut buf = [0 as c_char; 256];
+        check(sys::hipDeviceGetName(
+            buf.as_mut_ptr(),
+            buf.len() as c_int,
+            dev,
+        ))?;
+        let end = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+        Ok(
+            String::from_utf8_lossy(&buf[..end].iter().map(|&c| c as u8).collect::<Vec<_>>())
+                .into_owned(),
+        )
     }
 }
 

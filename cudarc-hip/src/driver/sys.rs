@@ -111,6 +111,7 @@ extern "C" {
         stream: CUstream,
     ) -> c_int;
 
+    pub fn hipDeviceGetName(name: *mut c_char, len: c_int, device: c_int) -> c_int;
     pub fn hipStreamCreate(stream: *mut CUstream) -> c_int;
     pub fn hipStreamCreateWithFlags(stream: *mut CUstream, flags: c_uint) -> c_int;
     pub fn hipStreamDestroy(stream: CUstream) -> c_int;
