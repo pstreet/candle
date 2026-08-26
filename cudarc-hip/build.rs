@@ -22,6 +22,7 @@ fn main() {
     let _ = PathBuf::from(std::env::var("OUT_DIR").unwrap());
     println!("cargo:rustc-link-lib=dylib=amdhip64");
     println!("cargo:rustc-link-lib=dylib=hipblas");
+    println!("cargo:rustc-link-lib=dylib=hipblaslt");
     println!("cargo:rustc-link-lib=dylib=hiprand");
     println!("cargo:rustc-link-lib=dylib=hiprtc");
     println!("cargo:rustc-link-lib=dylib=stdc++");

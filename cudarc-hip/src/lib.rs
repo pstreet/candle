@@ -4,6 +4,7 @@
 //! top of the HIP runtime, so that candle's `cuda_backend` can run on AMD GPUs.
 
 pub mod cublas;
+pub mod cublaslt;
 pub mod curand;
 pub mod driver;
 pub mod nvrtc;

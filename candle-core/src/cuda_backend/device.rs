@@ -28,6 +28,60 @@ impl DeviceId {
 struct CudaRng(cudarc::curand::CudaRng);
 unsafe impl Send for CudaRng {}
 
+/// hipBLASLt handle with a persistent workspace. Used for large-batch F16 GEMMs, where the
+/// per-call heuristic algo selection beats the plain hipBLAS default on RDNA.
+pub struct CudaBlasLt {
+    handle: cudarc::cublaslt::sys::cublasLtHandle_t,
+    workspace: cudarc::driver::CudaSlice<u8>,
+    workspace_size: usize,
+}
+
+unsafe impl Send for CudaBlasLt {}
+unsafe impl Sync for CudaBlasLt {}
+
+impl std::fmt::Debug for CudaBlasLt {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "CudaBlasLt")
+    }
+}
+
+impl CudaBlasLt {
+    // Large enough for big-batch prefill GEMMs; the heuristic workspace for the
+    // largest shapes (m=10240, k=5120, n up to ~8k) exceeds 32MB.
+    const WORKSPACE_BYTES: usize = 256 * 1024 * 1024;
+
+    pub fn new(stream: &cudarc::driver::CudaStream) -> crate::Result<Self> {
+        let handle = cudarc::cublaslt::result::create_handle().w()?;
+        let workspace = unsafe { stream.alloc::<u8>(Self::WORKSPACE_BYTES) }.w()?;
+        Ok(Self {
+            handle,
+            workspace,
+            workspace_size: Self::WORKSPACE_BYTES,
+        })
+    }
+
+    pub fn handle(&self) -> cudarc::cublaslt::sys::cublasLtHandle_t {
+        self.handle
+    }
+
+    pub fn workspace(&self) -> &cudarc::driver::CudaSlice<u8> {
+        &self.workspace
+    }
+
+    pub fn workspace_size(&self) -> usize {
+        self.workspace_size
+    }
+}
+
+impl Drop for CudaBlasLt {
+    fn drop(&mut self) {
+        let handle = std::mem::replace(&mut self.handle, std::ptr::null_mut());
+        if !handle.is_null() {
+            unsafe { cudarc::cublaslt::result::destroy_handle(handle) }.ok();
+        }
+    }
+}
+
 const CUDA_GRAPH_HTOD_CACHE_MAX_BYTES: usize = 4096;
 
 type CudaGraphHtodCacheKey = (DeviceId, TypeId, Vec<u8>);
@@ -63,6 +117,7 @@ pub struct CudaDevice {
     custom_modules: Arc<std::sync::RwLock<HashMap<String, Arc<cudarc::driver::CudaModule>>>>,
     stream: Arc<cudarc::driver::CudaStream>,
     pub(crate) blas: Arc<cudarc::cublas::CudaBlas>,
+    pub(crate) blas_lt: Arc<CudaBlasLt>,
     curand: Arc<Mutex<CudaRng>>,
     seed_value: Arc<RwLock<u64>>,
 }
@@ -463,6 +518,7 @@ impl CudaDevice {
         stream: Arc<cudarc::driver::CudaStream>,
     ) -> Result<Self> {
         let blas = cudarc::cublas::CudaBlas::new(stream.clone()).w()?;
+        let blas_lt = CudaBlasLt::new(&stream)?;
         let curand = cudarc::curand::CudaRng::new(299792458, stream.clone()).w()?;
         let module_store = ModuleStore {
             mdls: [const { None }; kernels::ALL_IDS.len()],
@@ -472,6 +528,7 @@ impl CudaDevice {
             context,
             stream,
             blas: Arc::new(blas),
+            blas_lt: Arc::new(blas_lt),
             curand: Arc::new(Mutex::new(CudaRng(curand))),
             modules: Arc::new(std::sync::RwLock::new(module_store)),
             custom_modules: Arc::new(std::sync::RwLock::new(HashMap::new())),

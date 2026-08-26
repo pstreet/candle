@@ -998,13 +998,48 @@ impl QCudaStorage {
         layout: &crate::Layout,
     ) -> Result<CudaStorage> {
         use crate::backend::BackendStorage;
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static DEQ_NS: AtomicU64 = AtomicU64::new(0);
+        static CAST_NS: AtomicU64 = AtomicU64::new(0);
+        static GEMM_NS: AtomicU64 = AtomicU64::new(0);
+        static CALLS: AtomicU64 = AtomicU64::new(0);
         // F16 accumulation matches llama.cpp's compute type and picks the fast WMMA path on RDNA.
         crate::cuda_backend::set_gemm_reduced_precision_f16(true);
+        let dbg = std::env::var("MMQ_DEBUG").is_ok();
+        let stream = self.device().cuda_stream();
+        if dbg {
+            stream.synchronize().ok();
+        }
+        let t0 = std::time::Instant::now();
         let w_f16 = self.dequantize_f16(n * k)?;
+        if dbg {
+            stream.synchronize().ok();
+            DEQ_NS.fetch_add(t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        }
+        let t1 = std::time::Instant::now();
         let act_f16 = storage.to_dtype(layout, DType::F16)?;
+        if dbg {
+            stream.synchronize().ok();
+            CAST_NS.fetch_add(t1.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        }
+        let t2 = std::time::Instant::now();
         let act_l = crate::Layout::contiguous(layout.shape().clone());
         let rhs_l = crate::Layout::new((k, n).into(), vec![1, k], 0).broadcast_as((b, k, n))?;
-        act_f16.matmul(&w_f16, (b, m, n, k), &act_l, &rhs_l)
+        let out = act_f16.matmul(&w_f16, (b, m, n, k), &act_l, &rhs_l)?;
+        if dbg {
+            stream.synchronize().ok();
+            GEMM_NS.fetch_add(t2.elapsed().as_nanos() as u64, Ordering::Relaxed);
+            let c = CALLS.fetch_add(1, Ordering::Relaxed) + 1;
+            if c % 128 == 0 {
+                let d = DEQ_NS.swap(0, Ordering::Relaxed) as f64 / 1e6;
+                let ca = CAST_NS.swap(0, Ordering::Relaxed) as f64 / 1e6;
+                let g = GEMM_NS.swap(0, Ordering::Relaxed) as f64 / 1e6;
+                eprintln!(
+                    "[mmq-timing] calls~{c} dequant_ms={d:.1} cast_ms={ca:.1} gemm_ms={g:.1}"
+                );
+            }
+        }
+        Ok(out)
     }
 }
 

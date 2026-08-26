@@ -18,7 +18,7 @@ pub mod cudnn;
 mod device;
 mod error;
 mod utils;
-pub use device::{CudaDevice, DeviceId};
+pub use device::{CudaBlasLt, CudaDevice, DeviceId};
 pub use error::{CudaError, WrapErr};
 pub use utils::{Map1, Map1Any, Map2, Map2Any, Map2InPlace, Map3, S};
 
@@ -2256,8 +2256,24 @@ impl BackendStorage for CudaStorage {
                 let rhs = &rhs.slice(rhs_l.start_offset()..);
                 let cfg = gemm_config(f16::ONE, f16::ZERO, (b, m, n, k), lhs_l, rhs_l)?;
                 let mut out = unsafe { dev.alloc::<f16>(elem_count)? };
-                unsafe { gemm_strided_batched_f16(&self.device.blas, cfg, rhs, lhs, &mut out) }
+                // Large-batch F16 GEMMs go through hipBLASLt (heuristic algo selection);
+                // small ones keep the plain hipBLAS default.
+                static LT_MIN: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+                let lt_min = *LT_MIN.get_or_init(|| {
+                    std::env::var("CANDLE_LT_MIN_TOKENS")
+                        .ok()
+                        .and_then(|v| v.parse().ok())
+                        .unwrap_or(256)
+                });
+                if b * m >= lt_min {
+                    unsafe {
+                        gemm_strided_batched_f16_lt(&self.device.blas_lt, cfg, rhs, lhs, &mut out)
+                    }
                     .w()?;
+                } else {
+                    unsafe { gemm_strided_batched_f16(&self.device.blas, cfg, rhs, lhs, &mut out) }
+                        .w()?;
+                }
                 CudaStorageSlice::F16(out)
             }
             (CudaStorageSlice::F32(lhs), CudaStorageSlice::F32(rhs)) => {
@@ -2667,6 +2683,166 @@ unsafe fn gemm_strided_batched_f16(
         compute_type,
         sys::cublasGemmAlgo_t::CUBLAS_GEMM_DEFAULT_TENSOR_OP,
     )
+}
+
+// hipBLASLt F16 GEMM with per-call heuristic algo selection. Uses COMPUTE_16F (F16
+// accumulation) to match llama.cpp; on RDNA this picks a much faster kernel than the plain
+// hipBLAS default for large-batch prefill GEMMs.
+unsafe fn gemm_strided_batched_f16_lt(
+    blas_lt: &CudaBlasLt,
+    cfg: StridedBatchedConfig<f16>,
+    a: &cudarc::driver::CudaView<f16>,
+    b: &cudarc::driver::CudaView<f16>,
+    c: &mut CudaSlice<f16>,
+) -> std::result::Result<(), cudarc::cublaslt::result::CublasError> {
+    use cudarc::cublaslt::{result, sys};
+    use cudarc::driver::DevicePtrMut;
+    use std::mem::size_of;
+
+    // CANDLE_LT_COMPUTE=32 forces F32 accumulation (more widely supported on RDNA);
+    // default is F16 accumulation (COMPUTE_16F) to match llama.cpp.
+    let use_32f = std::env::var("CANDLE_LT_COMPUTE")
+        .map(|v| v == "32")
+        .unwrap_or(false);
+    let compute_type = if use_32f {
+        sys::cublasComputeType_t::CUBLAS_COMPUTE_32F
+    } else {
+        sys::cublasComputeType_t::CUBLAS_COMPUTE_16F
+    };
+    let scale_type = if use_32f {
+        sys::cudaDataType_t::CUDA_R_32F
+    } else {
+        sys::cudaDataType_t::CUDA_R_16F
+    };
+    let alpha_f16: f16 = cfg.gemm.alpha;
+    let beta_f16: f16 = cfg.gemm.beta;
+    let alpha_f32: f32 = cfg.gemm.alpha.to_f32();
+    let beta_f32: f32 = cfg.gemm.beta.to_f32();
+    let f16_ty = sys::cudaDataType_t::CUDA_R_16F;
+    let is_t = cudarc::cublas::sys::cublasOperation_t::CUBLAS_OP_T;
+    let a_is_t = cfg.gemm.transa == is_t;
+    let b_is_t = cfg.gemm.transb == is_t;
+    // hipblasLt TRANSA/TRANSB take hipblasOperation_t values (111=N, 112=T), not 0/1.
+    let transa: u32 = if a_is_t { 112 } else { 111 };
+    let transb: u32 = if b_is_t { 112 } else { 111 };
+
+    let (m, n, k) = (cfg.gemm.m as u64, cfg.gemm.n as u64, cfg.gemm.k as u64);
+    let (a_rows, a_cols) = if a_is_t { (k, m) } else { (m, k) };
+    let (b_rows, b_cols) = if b_is_t { (n, k) } else { (k, n) };
+
+    let a_layout = result::create_matrix_layout(f16_ty, a_rows, a_cols, cfg.gemm.lda as i64)?;
+    let b_layout = result::create_matrix_layout(f16_ty, b_rows, b_cols, cfg.gemm.ldb as i64)?;
+    let c_layout = result::create_matrix_layout(f16_ty, m, n, cfg.gemm.ldc as i64)?;
+
+    // batch_count defaults to 1; only set batch attrs for true batched GEMMs.
+    if cfg.batch_size > 1 {
+        for (layout, stride) in [
+            (a_layout, cfg.stride_a),
+            (b_layout, cfg.stride_b),
+            (c_layout, cfg.stride_c),
+        ] {
+            result::set_matrix_layout_attribute(
+                layout,
+                sys::cublasLtMatrixLayoutAttribute_t::CUBLASLT_MATRIX_LAYOUT_BATCH_COUNT,
+                &cfg.batch_size as *const i32 as *const _,
+                size_of::<i32>(),
+            )?;
+            result::set_matrix_layout_attribute(
+                layout,
+                sys::cublasLtMatrixLayoutAttribute_t::CUBLASLT_MATRIX_LAYOUT_STRIDED_BATCH_OFFSET,
+                &stride as *const i64 as *const _,
+                size_of::<i64>(),
+            )?;
+        }
+    }
+
+    let matmul_desc =
+        result::create_matmul_desc(sys::cublasComputeType_t::CUBLAS_COMPUTE_16F, f16_ty)?;
+    for (attr, val) in [
+        (
+            sys::cublasLtMatmulDescAttributes_t::CUBLASLT_MATMUL_DESC_TRANSA,
+            transa,
+        ),
+        (
+            sys::cublasLtMatmulDescAttributes_t::CUBLASLT_MATMUL_DESC_TRANSB,
+            transb,
+        ),
+    ] {
+        result::set_matmul_desc_attribute(
+            matmul_desc,
+            attr,
+            &val as *const u32 as *const _,
+            size_of::<u32>(),
+        )?;
+    }
+
+    let matmul_pref = result::create_matmul_pref()?;
+    result::set_matmul_pref_attribute(
+        matmul_pref,
+        sys::cublasLtMatmulPreferenceAttributes_t::CUBLASLT_MATMUL_PREF_MAX_WORKSPACE_BYTES,
+        &blas_lt.workspace_size() as *const usize as *const _,
+        size_of::<usize>(),
+    )?;
+
+    let heuristic = result::get_matmul_algo_heuristic(
+        blas_lt.handle(),
+        matmul_desc,
+        a_layout,
+        b_layout,
+        c_layout,
+        c_layout,
+        matmul_pref,
+    )?;
+
+    use std::os::raw::c_void;
+    let stream = c.stream().clone();
+    let (a, _guard_a) = a.device_ptr(&stream);
+    let (b, _guard_b) = b.device_ptr(&stream);
+    let (c, _guard_c) = c.device_ptr_mut(&stream);
+    let (ws, _guard_ws) = blas_lt.workspace().device_ptr(&stream);
+    let alpha_ptr: *mut c_void = if use_32f {
+        &alpha_f32 as *const f32 as *mut c_void
+    } else {
+        &alpha_f16 as *const f16 as *mut c_void
+    };
+    let beta_ptr: *mut c_void = if use_32f {
+        &beta_f32 as *const f32 as *mut c_void
+    } else {
+        &beta_f16 as *const f16 as *mut c_void
+    };
+
+    if std::env::var("CANDLE_LT_DEBUG").is_ok() {
+        eprintln!(
+            "LTMUL m={} n={} k={} heur_ws={} alloc_ws={}",
+            m,
+            n,
+            k,
+            heuristic.workspace_size,
+            blas_lt.workspace_size()
+        );
+    }
+    let r = result::matmul(
+        blas_lt.handle(),
+        matmul_desc,
+        alpha_ptr,
+        a as *mut c_void,
+        a_layout,
+        b as *mut c_void,
+        b_layout,
+        beta_ptr,
+        c as *mut c_void,
+        c_layout,
+        c as *mut c_void,
+        c_layout,
+        &heuristic.algo,
+        ws as *mut c_void,
+        blas_lt.workspace_size(),
+        stream.cu_stream(),
+    );
+    if std::env::var("CANDLE_LT_DEBUG").is_ok() {
+        eprintln!("LTMUL done n={}", n);
+    }
+    r
 }
 
 unsafe fn gemm_strided_batched_bf16(
