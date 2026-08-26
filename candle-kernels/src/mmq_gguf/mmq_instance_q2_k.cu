@@ -84,10 +84,6 @@ static void launch_mmq_case_q2_k(float * tmp_fixup, const mmq_args & args, cudaS
     int mmq_x_best = 0;
     int ntiles_x_best = INT_MAX;
     for (int mmq_x = 8; mmq_x <= mmq_x_max && ntiles_x_best > 1; mmq_x += 8) {
-#ifdef USE_ROCM
-        // mmq_x=24 miscompiles for gfx1151 (hardware exception).
-        if (mmq_x == 24) continue;
-#endif
         const int granularity = mmq_get_granularity_host(mmq_x, cc);
         if (mmq_x % granularity != 0) continue;
         const size_t nbs = mmq_get_nbytes_shared<GGML_TYPE_Q2_K>(mmq_x, mmq_y, cc, warp_size_host, nwarps);
