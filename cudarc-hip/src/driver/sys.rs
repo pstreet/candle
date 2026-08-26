@@ -13,6 +13,7 @@ pub type CUevent = *mut c_void;
 pub type CUevent_flags = c_uint;
 pub type CUgraph = *mut c_void;
 pub type CUgraphExec = *mut c_void;
+pub type CUmemPool = *mut c_void;
 pub type CUstreamCaptureMode = c_uint;
 
 // `hipStreamCaptureMode` values (identical to CUDA's `cudaStreamCaptureMode`).
@@ -128,6 +129,10 @@ extern "C" {
     ) -> c_int;
     pub fn hipGraphLaunch(graphExec: CUgraphExec, stream: CUstream) -> c_int;
     pub fn hipGraphExecDestroy(graphExec: CUgraphExec) -> c_int;
+    pub fn hipGraphUpload(graphExec: CUgraphExec, stream: CUstream) -> c_int;
+
+    pub fn hipDeviceGetMemPool(mem_pool: *mut CUmemPool, device: c_int) -> c_int;
+    pub fn hipMemPoolSetAttribute(pool: CUmemPool, attr: c_uint, value: *mut c_void) -> c_int;
 
     pub fn hipEventCreate(event: *mut CUevent) -> c_int;
     pub fn hipEventCreateWithFlags(event: *mut CUevent, flags: c_uint) -> c_int;
