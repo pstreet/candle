@@ -631,6 +631,19 @@ impl CudaStream {
         } else {
             result::alloc(bytes)?
         };
+        // MRS_POISON_ALLOC=1: fill fresh allocations with 0xFF (NaN in f16/bf16/f32)
+        // so any read-before-write fails deterministically instead of intermittently.
+        if std::env::var("MRS_POISON_ALLOC").as_deref() == Ok("1") {
+            unsafe {
+                self.inner.ctx.bind_to_thread()?;
+                result::check(sys::hipMemsetAsync(
+                    ptr as *mut c_void,
+                    0xFF,
+                    bytes,
+                    self.inner.cu_stream,
+                ))?;
+            }
+        }
         let events = self.new_slice_events()?;
         Ok(CudaSlice {
             cu_device_ptr: ptr,
@@ -843,6 +856,18 @@ impl<T> Drop for CudaSlice<T> {
             ctx.record_err(self.stream.wait(write));
         }
         if ctx.has_async_alloc() {
+            // MRS_POISON_FREE=1: fill the block before returning it to the stream pool
+            // so any read-before-full-rewrite of reused memory becomes deterministic NaN.
+            if std::env::var("MRS_POISON_FREE").as_deref() == Ok("1") {
+                ctx.record_err(unsafe {
+                    result::check(sys::hipMemsetAsync(
+                        self.cu_device_ptr as *mut c_void,
+                        0xFF,
+                        self.len * std::mem::size_of::<T>(),
+                        self.stream.inner.cu_stream,
+                    ))
+                });
+            }
             ctx.record_err(unsafe {
                 result::free_async(self.cu_device_ptr, self.stream.inner.cu_stream)
             });
