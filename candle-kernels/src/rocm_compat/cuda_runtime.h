@@ -193,4 +193,5 @@ __device__ __forceinline__ int __vsubss4(int a, int b) {
 #define cudaHostAllocPortable hipHostAllocPortable
 #define cudaHostAllocMapped hipHostAllocMapped
 #define cudaSuccess hipSuccess
+#define cudaErrorInvalidValue hipErrorInvalidValue
 #define cudaHostAllocDefault hipHostAllocDefault

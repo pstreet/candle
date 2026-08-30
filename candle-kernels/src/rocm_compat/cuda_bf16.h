@@ -23,3 +23,15 @@ __device__ inline __nv_bfloat16 __hmin_nan(__nv_bfloat16 a, __nv_bfloat16 b) {
   const float r = (fa != fa) ? fa : ((fb != fb) ? fb : fminf(fa, fb));
   return __float2bfloat16(r);
 }
+
+// HIP's __ldg (hip_ldg.h) lacks the bfloat16 overloads the CUDA sources expect.
+__device__ inline __nv_bfloat16 __ldg(const __nv_bfloat16* ptr) { return *ptr; }
+__device__ inline __nv_bfloat162 __ldg(const __nv_bfloat162* ptr) { return *ptr; }
+
+// CUDA's _rn suffix is the default rounding for __float2bfloat16.
+#define __float2bfloat16_rn __float2bfloat16
+
+// CUDA-only conversion: reinterpret the low 16 bits of an unsigned int as bf16.
+__device__ inline __nv_bfloat16 __uint2bfloat16_rn(unsigned int v) {
+  return __ushort_as_bfloat16((unsigned short)(v & 0xffffu));
+}

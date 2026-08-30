@@ -77,6 +77,22 @@ pub mod result {
             compute_type: super::sys::cublasComputeType_t,
             algo: super::sys::cublasGemmAlgo_t,
         ) -> i32;
+        fn hipblasHgemm(
+            handle: super::sys::cublasHandle_t,
+            transa: super::sys::cublasOperation_t,
+            transb: super::sys::cublasOperation_t,
+            m: c_int,
+            n: c_int,
+            k: c_int,
+            alpha: *const half::f16,
+            a: *const half::f16,
+            lda: c_int,
+            b: *const half::f16,
+            ldb: c_int,
+            beta: *const half::f16,
+            c: *mut half::f16,
+            ldc: c_int,
+        ) -> i32;
     }
 
     pub unsafe fn create(handle: *mut super::sys::cublasHandle_t) -> Result<(), CublasError> {
@@ -187,6 +203,27 @@ pub mod result {
             batch_count,
             compute_type,
             algo,
+        ))
+    }
+
+    pub unsafe fn hgemm(
+        handle: super::sys::cublasHandle_t,
+        transa: super::sys::cublasOperation_t,
+        transb: super::sys::cublasOperation_t,
+        m: c_int,
+        n: c_int,
+        k: c_int,
+        alpha: *const half::f16,
+        a: *const half::f16,
+        lda: c_int,
+        b: *const half::f16,
+        ldb: c_int,
+        beta: *const half::f16,
+        c: *mut half::f16,
+        ldc: c_int,
+    ) -> Result<(), CublasError> {
+        check(hipblasHgemm(
+            handle, transa, transb, m, n, k, alpha, a, lda, b, ldb, beta, c, ldc,
         ))
     }
 }
