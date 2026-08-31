@@ -614,6 +614,11 @@ impl CudaStream {
         self.inner.ctx.capture_arena_offset.load(Ordering::Relaxed)
     }
 
+    /// True while an arena pointer is installed on this stream's context.
+    pub fn capture_arena_active(&self) -> bool {
+        self.inner.ctx.capture_arena.lock().unwrap().is_some()
+    }
+
     /// True when the last arena-backed capture overflowed; the caller can grow
     /// the arena and re-capture with a fresh [Self::begin_capture_arena].
     pub fn capture_arena_overflowed(&self) -> bool {
@@ -621,6 +626,16 @@ impl CudaStream {
             .ctx
             .capture_arena_overflowed
             .load(Ordering::Relaxed)
+    }
+
+    /// Clear capture bookkeeping after a capture that was ended by a raw
+    /// `hipStreamEndCapture` (which does not touch this crate's flags): reset
+    /// the per-stream capturing flag and drop the arena bump pointer so eager
+    /// allocations stop being carved from the now-stale capture arena. The
+    /// arena memory itself must stay alive via the caller's keepalive handle.
+    pub fn reset_capture_bookkeeping(&self) {
+        self.inner.capturing.store(0, Ordering::Relaxed);
+        *self.inner.ctx.capture_arena.lock().unwrap() = None;
     }
 
     fn begin_capture_common(&self) -> Result<(), DriverError> {
