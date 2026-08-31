@@ -5,7 +5,7 @@ use crate::driver::sys::CUstreamCaptureStatus;
 use std::marker::PhantomData;
 use std::ops::RangeBounds;
 use std::os::raw::c_void;
-use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 // ---------------------------------------------------------------------------
@@ -95,6 +95,8 @@ pub struct CudaContext {
     /// [CudaStream::begin_capture_arena].
     capture_arena: Mutex<Option<Arc<CudaSlice<u8>>>>,
     capture_arena_offset: AtomicUsize,
+    capture_arena_overflowed: AtomicBool,
+    capture_arena_alloc_count: AtomicU32,
     /// Running total of bytes handed out by [CudaStream::alloc], useful for
     /// sizing the capture arena from a dry run.
     alloc_bytes: AtomicUsize,
@@ -121,6 +123,8 @@ impl CudaContext {
             stream_synchronization: AtomicU8::new(TRACKING_ON),
             capture_arena: Mutex::new(None),
             capture_arena_offset: AtomicUsize::new(0),
+            capture_arena_overflowed: AtomicBool::new(false),
+            capture_arena_alloc_count: AtomicU32::new(0),
             alloc_bytes: AtomicUsize::new(0),
         }))
     }
@@ -162,7 +166,25 @@ impl CudaContext {
         let need = (bytes + 255) & !255usize;
         let offset = self.capture_arena_offset.fetch_add(need, Ordering::AcqRel);
         if offset + need > arena.len() {
+            self.capture_arena_overflowed.store(true, Ordering::Release);
+            eprintln!(
+                "[cudarc] capture arena overflow: need={bytes} aligned={need} offset={offset} arena={} allocs={} t={}",
+                arena.len(),
+                self.capture_arena_alloc_count.load(Ordering::Relaxed),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_nanos())
+                    .unwrap_or(0)
+            );
             return Err(DriverError(sys::HIP_ERROR_OUT_OF_MEMORY));
+        }
+        self.capture_arena_alloc_count
+            .fetch_add(1, Ordering::Relaxed);
+        if std::env::var("MRS_ARENA_ALLOC_LOG").as_deref() == Ok("1") {
+            eprintln!(
+                "[cudarc] arena_alloc off={offset} size={need} thr={:?}",
+                std::thread::current().id()
+            );
         }
         Ok(Some(offset as u64 as usize))
     }
@@ -552,6 +574,14 @@ impl CudaStream {
             .ctx
             .capture_arena_offset
             .store(0, Ordering::Relaxed);
+        self.inner
+            .ctx
+            .capture_arena_overflowed
+            .store(false, Ordering::Relaxed);
+        self.inner
+            .ctx
+            .capture_arena_alloc_count
+            .store(0, Ordering::Relaxed);
         self.begin_capture_common()
     }
 
@@ -568,7 +598,29 @@ impl CudaStream {
             .ctx
             .capture_arena_offset
             .store(0, Ordering::Relaxed);
+        self.inner
+            .ctx
+            .capture_arena_overflowed
+            .store(false, Ordering::Relaxed);
+        self.inner
+            .ctx
+            .capture_arena_alloc_count
+            .store(0, Ordering::Relaxed);
         self.begin_capture_common()
+    }
+
+    /// Bump offset consumed from the active capture arena, for sizing it.
+    pub fn capture_arena_consumed(&self) -> usize {
+        self.inner.ctx.capture_arena_offset.load(Ordering::Relaxed)
+    }
+
+    /// True when the last arena-backed capture overflowed; the caller can grow
+    /// the arena and re-capture with a fresh [Self::begin_capture_arena].
+    pub fn capture_arena_overflowed(&self) -> bool {
+        self.inner
+            .ctx
+            .capture_arena_overflowed
+            .load(Ordering::Relaxed)
     }
 
     fn begin_capture_common(&self) -> Result<(), DriverError> {
