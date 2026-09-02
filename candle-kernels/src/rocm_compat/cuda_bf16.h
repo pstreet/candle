@@ -35,3 +35,8 @@ __device__ inline __nv_bfloat162 __ldg(const __nv_bfloat162* ptr) { return *ptr;
 __device__ inline __nv_bfloat16 __uint2bfloat16_rn(unsigned int v) {
   return __ushort_as_bfloat16((unsigned short)(v & 0xffffu));
 }
+
+// CUDA packs two floats into a bfloat162; HIP has no __floats2bfloat162_rn.
+__device__ inline __nv_bfloat162 __floats2bfloat162_rn(float x, float y) {
+  return __nv_bfloat162{__float2bfloat16_rn(x), __float2bfloat16_rn(y)};
+}

@@ -205,7 +205,7 @@ impl CudaRng {
     pub fn new(seed: u64, stream: Arc<CudaStream>) -> Result<Self, CurandError> {
         let ctx = &stream.inner.ctx;
         if let Err(e) = ctx.bind_to_thread() {
-            return Err(CurandError(e.0));
+            return Err(CurandError(e.0 as i32));
         }
         let gen = unsafe { result::create_generator()? };
         unsafe { result::set_stream(gen, stream.inner.cu_stream)? };

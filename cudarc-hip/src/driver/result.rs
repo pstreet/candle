@@ -1,24 +1,29 @@
 use super::sys;
-use std::os::raw::{c_char, c_int, c_void};
+use std::os::raw::{c_char, c_int, c_uint, c_void};
 
 /// Error from a HIP runtime call, mirroring `cudarc::driver::DriverError`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct DriverError(pub i32);
+pub struct DriverError(pub sys::CUresult);
 
 impl std::fmt::Display for DriverError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let msg = unsafe { std::ffi::CStr::from_ptr(sys::hipGetErrorString(self.0)) };
-        write!(f, "hip error {}: {}", self.0, msg.to_string_lossy())
+        let code = self.0 as i32;
+        let msg = unsafe { std::ffi::CStr::from_ptr(sys::hipGetErrorString(code)) };
+        write!(f, "hip error {code}: {msg}", msg = msg.to_string_lossy())
     }
 }
 
 impl std::error::Error for DriverError {}
 
+fn cu_result(code: i32) -> sys::CUresult {
+    unsafe { std::mem::transmute::<i32, sys::CUresult>(code) }
+}
+
 pub fn check(err: i32) -> Result<(), DriverError> {
     if err == sys::HIP_SUCCESS {
         Ok(())
     } else {
-        Err(DriverError(err))
+        Err(DriverError(cu_result(err)))
     }
 }
 
@@ -43,6 +48,16 @@ pub unsafe fn free_sync(ptr: sys::CUdeviceptr) -> Result<(), DriverError> {
 
 pub unsafe fn free_async(ptr: sys::CUdeviceptr, stream: sys::CUstream) -> Result<(), DriverError> {
     check(sys::hipFreeAsync(ptr, stream))
+}
+
+pub unsafe fn malloc_host(size_bytes: usize, flags: c_uint) -> Result<*mut c_void, DriverError> {
+    let mut ptr: *mut c_void = std::ptr::null_mut();
+    check(sys::hipHostAlloc(&mut ptr, size_bytes, flags))?;
+    Ok(ptr)
+}
+
+pub unsafe fn free_host(ptr: *mut c_void) -> Result<(), DriverError> {
+    check(sys::hipHostFree(ptr))
 }
 
 // -- Stream capture / graphs -------------------------------------------------

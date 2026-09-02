@@ -113,7 +113,7 @@ impl CudaContext {
     pub fn new(ordinal: usize) -> Result<Arc<Self>, DriverError> {
         let count = Self::device_count()?;
         if ordinal as i32 >= count {
-            return Err(DriverError(sys::HIP_ERROR_INVALID_VALUE));
+            return Err(DriverError(sys::CUresult::CUDA_ERROR_INVALID_VALUE));
         }
         let err = unsafe { sys::hipSetDevice(ordinal as i32) };
         result::check(err)?;
@@ -176,7 +176,7 @@ impl CudaContext {
                     .map(|d| d.as_nanos())
                     .unwrap_or(0)
             );
-            return Err(DriverError(sys::HIP_ERROR_OUT_OF_MEMORY));
+            return Err(DriverError(sys::CUresult::CUDA_ERROR_OUT_OF_MEMORY));
         }
         self.capture_arena_alloc_count
             .fetch_add(1, Ordering::Relaxed);
@@ -193,7 +193,7 @@ impl CudaContext {
         let arena = self.capture_arena.lock().unwrap();
         match &*arena {
             Some(a) => Ok(a.cu_device_ptr),
-            None => Err(DriverError(sys::HIP_ERROR_INVALID_VALUE)),
+            None => Err(DriverError(sys::CUresult::CUDA_ERROR_INVALID_VALUE)),
         }
     }
 
@@ -316,8 +316,10 @@ impl CudaContext {
 
     pub fn new_event(
         self: &Arc<Self>,
-        flags: sys::CUevent_flags,
-    ) -> Result<Arc<CudaEvent>, DriverError> {
+        flags: Option<sys::CUevent_flags>,
+    ) -> Result<CudaEvent, DriverError> {
+        let flags = flags.unwrap_or(sys::CUevent_flags::CU_EVENT_DEFAULT);
+        let flags = flags as u32;
         let mut ev = std::ptr::null_mut();
         self.bind_to_thread()?;
         unsafe {
@@ -327,10 +329,35 @@ impl CudaContext {
                 sys::hipEventCreateWithFlags(&mut ev, flags)
             })?;
         }
-        Ok(Arc::new(CudaEvent {
+        Ok(CudaEvent {
             cu_event: ev,
             ctx: self.clone(),
-        }))
+        })
+    }
+
+    /// Allocates page-locked host memory with write-combined flags.
+    ///
+    /// # Safety
+    /// The returned memory is uninitialized.
+    pub unsafe fn alloc_pinned<T: DeviceRepr>(
+        self: &Arc<Self>,
+        len: usize,
+    ) -> Result<PinnedHostSlice<T>, DriverError> {
+        self.bind_to_thread()?;
+        let ptr = result::malloc_host(
+            len * std::mem::size_of::<T>(),
+            sys::CU_MEMHOSTALLOC_WRITECOMBINED,
+        )?;
+        let ptr = ptr as *mut T;
+        assert!(!ptr.is_null());
+        assert!(len * std::mem::size_of::<T>() < isize::MAX as usize);
+        assert!(ptr.is_aligned());
+        let event = self.new_event(Some(sys::CUevent_flags::CU_EVENT_BLOCKING_SYNC))?;
+        Ok(PinnedHostSlice {
+            ptr,
+            len,
+            event: Arc::new(event),
+        })
     }
 
     /// A new non-blocking stream.
@@ -392,7 +419,7 @@ impl CudaContext {
             },
             crate::nvrtc::PtxKind::Src(src) => src.into_bytes(),
             crate::nvrtc::PtxKind::File(path) => {
-                std::fs::read(&path).map_err(|_| DriverError(sys::HIP_ERROR_INVALID_VALUE))?
+                std::fs::read(&path).map_err(|_| DriverError(sys::CUresult::CUDA_ERROR_INVALID_VALUE))?
             }
             crate::nvrtc::PtxKind::Binary(data) => data,
         };
@@ -447,6 +474,129 @@ impl CudaEvent {
     pub fn is_complete(&self) -> bool {
         let rc = unsafe { sys::hipEventSynchronize(self.cu_event) };
         rc == sys::HIP_SUCCESS
+    }
+
+    /// Elapsed time in milliseconds between this event and `end`.
+    pub fn elapsed_ms(&self, end: &Self) -> Result<f32, DriverError> {
+        if !Arc::ptr_eq(&self.ctx, &end.ctx) {
+            return Err(DriverError(sys::CUresult::CUDA_ERROR_INVALID_VALUE));
+        }
+        self.ctx.bind_to_thread()?;
+        self.synchronize()?;
+        end.synchronize()?;
+        let mut ms = 0.0f32;
+        unsafe {
+            result::check(sys::hipEventElapsedTime(
+                &mut ms,
+                self.cu_event,
+                end.cu_event,
+            ))?;
+        }
+        Ok(ms)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// PinnedHostSlice
+// ---------------------------------------------------------------------------
+
+/// Page-locked host memory owned by the driver; allocate with
+/// [CudaContext::alloc_pinned]. Mirrors cudarc's `PinnedHostSlice`.
+#[derive(Debug)]
+pub struct PinnedHostSlice<T> {
+    pub(crate) ptr: *mut T,
+    pub(crate) len: usize,
+    pub(crate) event: Arc<CudaEvent>,
+}
+
+unsafe impl<T> Send for PinnedHostSlice<T> {}
+unsafe impl<T> Sync for PinnedHostSlice<T> {}
+
+impl<T> Drop for PinnedHostSlice<T> {
+    fn drop(&mut self) {
+        let ctx = &self.event.ctx;
+        ctx.record_err(self.event.synchronize());
+        ctx.record_err(unsafe { result::free_host(self.ptr as *mut c_void) });
+    }
+}
+
+impl<T> PinnedHostSlice<T> {
+    pub fn context(&self) -> &Arc<CudaContext> {
+        &self.event.ctx
+    }
+
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    pub fn num_bytes(&self) -> usize {
+        self.len * std::mem::size_of::<T>()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+}
+
+impl<T: ValidAsZeroBits> PinnedHostSlice<T> {
+    pub fn as_ptr(&self) -> Result<*const T, DriverError> {
+        self.event.synchronize()?;
+        Ok(self.ptr)
+    }
+
+    pub fn as_mut_ptr(&mut self) -> Result<*mut T, DriverError> {
+        self.event.synchronize()?;
+        Ok(self.ptr)
+    }
+
+    pub fn as_slice(&self) -> Result<&[T], DriverError> {
+        self.event.synchronize()?;
+        Ok(unsafe { std::slice::from_raw_parts(self.ptr, self.len) })
+    }
+
+    pub fn as_mut_slice(&mut self) -> Result<&mut [T], DriverError> {
+        self.event.synchronize()?;
+        Ok(unsafe { std::slice::from_raw_parts_mut(self.ptr, self.len) })
+    }
+}
+
+impl<T> AsRef<[T]> for PinnedHostSlice<T> {
+    fn as_ref(&self) -> &[T] {
+        unsafe { std::slice::from_raw_parts(self.ptr, self.len) }
+    }
+}
+
+impl<T> AsMut<[T]> for PinnedHostSlice<T> {
+    fn as_mut(&mut self) -> &mut [T] {
+        unsafe { std::slice::from_raw_parts_mut(self.ptr, self.len) }
+    }
+}
+
+impl<T> HostSlice<T> for PinnedHostSlice<T> {
+    fn len(&self) -> usize {
+        self.len
+    }
+
+    unsafe fn stream_synced_slice<'a>(
+        &'a self,
+        stream: &'a CudaStream,
+    ) -> (&'a [T], SyncOnDrop<'a>) {
+        stream.inner.ctx.record_err(stream.wait(&self.event));
+        (
+            std::slice::from_raw_parts(self.ptr, self.len),
+            SyncOnDrop::Record(Some((&self.event, stream))),
+        )
+    }
+
+    unsafe fn stream_synced_mut_slice<'a>(
+        &'a mut self,
+        stream: &'a CudaStream,
+    ) -> (&'a mut [T], SyncOnDrop<'a>) {
+        stream.inner.ctx.record_err(stream.wait(&self.event));
+        (
+            std::slice::from_raw_parts_mut(self.ptr, self.len),
+            SyncOnDrop::Record(Some((&self.event, stream))),
+        )
     }
 }
 
@@ -503,7 +653,10 @@ impl CudaStream {
         unsafe { result::check(sys::hipStreamSynchronize(self.inner.cu_stream)) }
     }
 
-    pub fn record_event(&self, flags: sys::CUevent_flags) -> Result<Arc<CudaEvent>, DriverError> {
+    pub fn record_event(
+        &self,
+        flags: Option<sys::CUevent_flags>,
+    ) -> Result<CudaEvent, DriverError> {
         let ev = self.inner.ctx.new_event(flags)?;
         ev.record(self)?;
         Ok(ev)
@@ -521,7 +674,7 @@ impl CudaStream {
     }
 
     pub fn join(&self, other: &CudaStream) -> Result<(), DriverError> {
-        let ev = other.record_event(0)?;
+        let ev = other.record_event(Some(sys::CUevent_flags::CU_EVENT_DEFAULT))?;
         self.wait(&ev)
     }
 
@@ -661,7 +814,7 @@ impl CudaStream {
     /// captured work into an executable graph bound to this stream.
     pub fn end_capture(&self) -> Result<Arc<CudaGraphExec>, DriverError> {
         if self.inner.capturing.load(Ordering::Relaxed) == 0 {
-            return Err(DriverError(sys::HIP_ERROR_INVALID_VALUE));
+            return Err(DriverError(sys::CUresult::CUDA_ERROR_INVALID_VALUE));
         }
         self.inner.capturing.store(0, Ordering::Relaxed);
         let mut graph: sys::CUgraph = std::ptr::null_mut();
@@ -876,8 +1029,8 @@ impl CudaStream {
             });
         }
         Ok(SliceEvents {
-            read: Some(self.record_event(0)?),
-            write: Some(self.record_event(0)?),
+            read: Some(CudaEvent::new_internal(&self.inner.ctx, 0)?),
+            write: Some(CudaEvent::new_internal(&self.inner.ctx, 0)?),
         })
     }
 }

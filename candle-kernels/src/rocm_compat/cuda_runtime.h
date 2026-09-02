@@ -151,6 +151,7 @@ __device__ __forceinline__ int __vsubss4(int a, int b) {
 #define cudaHostAlloc hipHostMalloc
 #define cudaMemcpy hipMemcpy
 #define cudaMemcpyAsync hipMemcpyAsync
+#define cudaMemcpy2DAsync hipMemcpy2DAsync
 #define cudaMemset hipMemset
 #define cudaMemsetAsync hipMemsetAsync
 #define cudaMemsetD32Async hipMemsetD32Async
@@ -179,6 +180,7 @@ __device__ __forceinline__ int __vsubss4(int a, int b) {
 #define cudaDeviceReset hipDeviceReset
 #define cudaGetDevice hipGetDevice
 #define cudaSetDevice hipSetDevice
+#define cudaDeviceGetAttribute hipDeviceGetAttribute
 #define cudaGetDeviceCount hipGetDeviceCount
 #define cudaDeviceProp hipDeviceProp
 #define cudaStream_t hipStream_t
@@ -194,4 +196,11 @@ __device__ __forceinline__ int __vsubss4(int a, int b) {
 #define cudaHostAllocMapped hipHostAllocMapped
 #define cudaSuccess hipSuccess
 #define cudaErrorInvalidValue hipErrorInvalidValue
+#define cudaDevAttrMultiProcessorCount hipDeviceAttributeMultiprocessorCount
+#define cudaDevAttrMaxSharedMemoryPerBlockOptin \
+  hipDeviceAttributeMaxSharedMemoryPerBlock
+#define cudaDevAttrCooperativeLaunch hipDeviceAttributeCooperativeLaunch
+#define cudaOccupancyMaxActiveBlocksPerMultiprocessor \
+  hipOccupancyMaxActiveBlocksPerMultiprocessor
+#define cudaLaunchCooperativeKernel hipLaunchCooperativeKernel
 #define cudaHostAllocDefault hipHostAllocDefault

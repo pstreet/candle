@@ -84,7 +84,7 @@ impl<'a> LaunchArgs<'a> {
             self.stream.wait(*event)?;
         }
         if let Some(flags) = self.flags {
-            let _ = self.stream.record_event(flags)?;
+            let _ = self.stream.record_event(Some(flags))?;
         }
         result::launch_kernel(
             self.func.cu_function,
@@ -98,7 +98,7 @@ impl<'a> LaunchArgs<'a> {
             (*event).record(self.stream)?;
         }
         if let Some(flags) = self.flags {
-            let _ = self.stream.record_event(flags)?;
+            let _ = self.stream.record_event(Some(flags))?;
         }
         Ok(())
     }
