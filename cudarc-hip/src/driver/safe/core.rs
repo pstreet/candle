@@ -418,9 +418,8 @@ impl CudaContext {
                 std::slice::from_raw_parts(image.as_ptr().cast(), image.len()).to_vec()
             },
             crate::nvrtc::PtxKind::Src(src) => src.into_bytes(),
-            crate::nvrtc::PtxKind::File(path) => {
-                std::fs::read(&path).map_err(|_| DriverError(sys::CUresult::CUDA_ERROR_INVALID_VALUE))?
-            }
+            crate::nvrtc::PtxKind::File(path) => std::fs::read(&path)
+                .map_err(|_| DriverError(sys::CUresult::CUDA_ERROR_INVALID_VALUE))?,
             crate::nvrtc::PtxKind::Binary(data) => data,
         };
         let cu_module = unsafe { result::module::load_data(data.as_ptr().cast()) }?;
