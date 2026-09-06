@@ -2709,11 +2709,6 @@ unsafe fn gemm_strided_batched_f16_lt(
     } else {
         sys::cublasComputeType_t::CUBLAS_COMPUTE_16F
     };
-    let scale_type = if use_32f {
-        sys::cudaDataType_t::CUDA_R_32F
-    } else {
-        sys::cudaDataType_t::CUDA_R_16F
-    };
     let alpha_f16: f16 = cfg.gemm.alpha;
     let beta_f16: f16 = cfg.gemm.beta;
     let alpha_f32: f32 = cfg.gemm.alpha.to_f32();
@@ -2756,8 +2751,7 @@ unsafe fn gemm_strided_batched_f16_lt(
         }
     }
 
-    let matmul_desc =
-        result::create_matmul_desc(sys::cublasComputeType_t::CUBLAS_COMPUTE_16F, f16_ty)?;
+    let matmul_desc = result::create_matmul_desc(compute_type, f16_ty)?;
     for (attr, val) in [
         (
             sys::cublasLtMatmulDescAttributes_t::CUBLASLT_MATMUL_DESC_TRANSA,
