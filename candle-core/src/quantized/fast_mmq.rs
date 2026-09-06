@@ -273,6 +273,10 @@ pub fn try_fwd(
     rhs: &CudaStorage,
     rhs_l: &crate::Layout,
 ) -> Result<Option<(CudaStorage, Shape)>> {
+    // CANDLE_NO_FAST_MMQ=1 skips this custom MMQ path (falls through to dequant+BLAS).
+    if std::env::var("CANDLE_NO_FAST_MMQ").is_ok() {
+        return Ok(None);
+    }
     let w_dtype = qstorage.dtype();
     if !supports(w_dtype) {
         return Ok(None);

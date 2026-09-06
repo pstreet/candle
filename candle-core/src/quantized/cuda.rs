@@ -955,11 +955,18 @@ impl QCudaStorage {
             crate::bail!("mismatch on matmul dim {self_shape:?} {:?}", layout.shape())
         }
 
+        static DMM_F16_MIN: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+        let dmm_f16_min = *DMM_F16_MIN.get_or_init(|| {
+            std::env::var("CANDLE_DMM_F16_MIN")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(256)
+        });
         let out = if FORCE_DMMV.load(std::sync::atomic::Ordering::Relaxed) {
             let data_f32 = self.dequantize(n * k)?;
             let rhs_l = crate::Layout::new((k, n).into(), vec![1, k], 0).broadcast_as((b, k, n))?;
             storage.matmul(&data_f32, (b, m, n, k), layout, &rhs_l)?
-        } else if b * m > 256 {
+        } else if b * m > dmm_f16_min {
             // Large batch: dequantize weights to F16 and run a hipBLAS GEMM.
             self.dequantize_matmul_f16(n, k, b, m, storage, layout)?
         } else {
