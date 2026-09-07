@@ -966,7 +966,18 @@ impl QCudaStorage {
         rhs: &CudaStorage,
         rhs_l: &crate::Layout,
     ) -> Result<(CudaStorage, crate::Shape)> {
+        use crate::backend::BackendStorage;
         let (nrows, ncols) = self_shape.dims2()?;
+        // Small-batch kernels need F32 activations; cast if caller passed native dtype.
+        let f32_storage;
+        let f32_layout;
+        let (rhs, rhs_l) = if rhs.dtype() == DType::F32 {
+            (rhs, rhs_l)
+        } else {
+            f32_storage = rhs.to_dtype(rhs_l, DType::F32)?;
+            f32_layout = crate::Layout::contiguous(rhs_l.shape().clone());
+            (&f32_storage, &f32_layout)
+        };
         let rhs = rhs.as_cuda_slice::<f32>()?;
         let rhs = match rhs_l.contiguous_offsets() {
             Some((o1, o2)) => rhs.slice(o1..o2),
