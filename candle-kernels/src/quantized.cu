@@ -1136,12 +1136,18 @@ extern "C" __global__ void dequantize_block_##QNAME##_f32(const void * __restric
 extern "C" __global__ void dequantize_block_##QNAME##_f16(const void * __restrict__ vx, half * __restrict__ y) { \
   dequantize_block_##QNAME(vx, y); \
 } \
+extern "C" __global__ void dequantize_block_##QNAME##_bf16(const void * __restrict__ vx, __nv_bfloat16 * __restrict__ y) { \
+  dequantize_block_##QNAME(vx, y); \
+} \
 
 #define DEQUANTIZE(QNAME) \
 extern "C" __global__ void dequantize_block_##QNAME##_f32(const void * __restrict__ vx, float * __restrict__ y, const int k) { \
   dequantize_block_##QNAME(vx, y, k); \
 } \
 extern "C" __global__ void dequantize_block_##QNAME##_f16(const void * __restrict__ vx, half * __restrict__ y, const int k) { \
+  dequantize_block_##QNAME(vx, y, k); \
+} \
+extern "C" __global__ void dequantize_block_##QNAME##_bf16(const void * __restrict__ vx, __nv_bfloat16 * __restrict__ y, const int k) { \
   dequantize_block_##QNAME(vx, y, k); \
 } \
 

@@ -2,7 +2,7 @@ use super::{GgmlDType, QStorage};
 use crate::quantized::k_quants::GgmlType;
 use crate::{backend::BackendDevice, cuda_backend::WrapErr};
 use crate::{builder_arg as barg, CudaDevice, CudaStorage, DType, Result};
-use half::f16;
+use half::{bf16, f16};
 
 use cudarc::driver::{CudaSlice, CudaStream, CudaView, DevicePtr, PushKernelArg, SyncOnDrop};
 
@@ -197,6 +197,64 @@ fn dequantize_f16(
     let dst = unsafe { dev.alloc::<f16>(elem_count)? };
     // See e.g.
     // https://github.com/ggerganov/llama.cpp/blob/cbbd1efa06f8c09f9dff58ff9d9af509cc4c152b/ggml-cuda.cu#L7270
+    let cfg = cudarc::driver::LaunchConfig {
+        grid_dim: (num_blocks as u32, 1, 1),
+        block_dim: (block_dim as u32, 1, 1),
+        shared_mem_bytes: 0,
+    };
+
+    if is_k {
+        let mut builder = func.builder();
+        builder.arg(&data.inner);
+        builder.arg(&dst);
+        unsafe { builder.launch(cfg) }.w()?;
+    } else {
+        let nb32 = match dtype {
+            GgmlDType::Q5_0 | GgmlDType::Q5_1 => elem_count,
+            _ => elem_count / 32,
+        };
+        let mut builder = func.builder();
+        builder.arg(&data.inner);
+        builder.arg(&dst);
+        barg!(builder, nb32 as i32);
+        unsafe { builder.launch(cfg) }.w()?;
+    }
+    Ok(CudaStorage::wrap_cuda_slice(dst, dev.clone()))
+}
+
+fn dequantize_bf16(
+    data: &PaddedCudaSlice,
+    dtype: GgmlDType,
+    elem_count: usize,
+    dev: &CudaDevice,
+) -> Result<CudaStorage> {
+    let nb = elem_count.div_ceil(256);
+    let (kernel_name, is_k, block_dim, num_blocks) = match dtype {
+        GgmlDType::Q4_0 => ("dequantize_block_q4_0_bf16", false, 32, nb),
+        GgmlDType::Q4_1 => ("dequantize_block_q4_1_bf16", false, 32, nb),
+        GgmlDType::Q5_0 => (
+            "dequantize_block_q5_0_bf16",
+            false,
+            CUDA_DEQUANTIZE_BLOCK_SIZE,
+            ceil_div(elem_count, 2 * CUDA_DEQUANTIZE_BLOCK_SIZE),
+        ),
+        GgmlDType::Q5_1 => (
+            "dequantize_block_q5_1_bf16",
+            false,
+            CUDA_DEQUANTIZE_BLOCK_SIZE,
+            ceil_div(elem_count, 2 * CUDA_DEQUANTIZE_BLOCK_SIZE),
+        ),
+        GgmlDType::Q8_0 => ("dequantize_block_q8_0_bf16", false, 32, nb),
+        GgmlDType::Q2K => ("dequantize_block_q2_K_bf16", true, 64, nb),
+        GgmlDType::Q3K => ("dequantize_block_q3_K_bf16", true, 64, nb),
+        GgmlDType::Q4K => ("dequantize_block_q4_K_bf16", true, 32, nb),
+        GgmlDType::Q5K => ("dequantize_block_q5_K_bf16", true, 64, nb),
+        GgmlDType::Q6K => ("dequantize_block_q6_K_bf16", true, 64, nb),
+        GgmlDType::Q8K => ("dequantize_block_q8_K_bf16", true, 32, nb),
+        _ => crate::bail!("unsupported dtype for dequantize {dtype:?}"),
+    };
+    let func = dev.get_or_load_func(kernel_name, &candle_kernels::QUANTIZED)?;
+    let dst = unsafe { dev.alloc::<bf16>(elem_count)? };
     let cfg = cudarc::driver::LaunchConfig {
         grid_dim: (num_blocks as u32, 1, 1),
         block_dim: (block_dim as u32, 1, 1),
@@ -701,6 +759,10 @@ impl QCudaStorage {
         dequantize_f16(&self.data, self.dtype, elem_count, self.device())
     }
 
+    pub fn dequantize_bf16(&self, elem_count: usize) -> Result<CudaStorage> {
+        dequantize_bf16(&self.data, self.dtype, elem_count, self.device())
+    }
+
     pub fn quantize(&mut self, src: &CudaStorage) -> Result<()> {
         // Run the quantization on cpu.
         let src = match &src.slice {
@@ -967,9 +1029,29 @@ impl QCudaStorage {
             let rhs_l = crate::Layout::new((k, n).into(), vec![1, k], 0).broadcast_as((b, k, n))?;
             storage.matmul(&data_f32, (b, m, n, k), layout, &rhs_l)?
         } else if b * m > dmm_f16_min {
-            // Large batch: dequantize weights to F16 and run a hipBLAS GEMM.
-            self.dequantize_matmul_f16(n, k, b, m, storage, layout)?
+            // CANDLE_DMM_BF16=1: for native-BF16 activations, dequantize weights to
+            // BF16 and run a BF16 hipBLAS GEMM. This avoids the F16 path's
+            // bf16->f16 input cast and f16->bf16 output cast entirely.
+            static DMM_BF16: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+            let dmm_bf16 = *DMM_BF16.get_or_init(|| std::env::var("CANDLE_DMM_BF16").is_ok());
+            if dmm_bf16 {
+                self.dequantize_matmul_bf16(n, k, b, m, storage, layout)?
+            } else {
+                // Large batch: dequantize weights to F16 and run a hipBLAS GEMM.
+                self.dequantize_matmul_f16(n, k, b, m, storage, layout)?
+            }
         } else {
+            // Small-batch Q8_1 kernel needs F32 activations; cast if the caller
+            // passed a native (e.g. BF16) dtype.
+            let f32_storage;
+            let f32_layout;
+            let (storage, layout) = if storage.dtype() == DType::F32 {
+                (storage, layout)
+            } else {
+                f32_storage = storage.to_dtype(layout, DType::F32)?;
+                f32_layout = crate::Layout::contiguous(layout.shape().clone());
+                (&f32_storage, &f32_layout)
+            };
             let storage = storage.as_cuda_slice::<f32>()?;
             let storage = match layout.contiguous_offsets() {
                 Some((o1, o2)) => storage.slice(o1..o2),
@@ -1047,6 +1129,29 @@ impl QCudaStorage {
             }
         }
         Ok(out)
+    }
+
+    fn dequantize_matmul_bf16(
+        &self,
+        n: usize,
+        k: usize,
+        b: usize,
+        m: usize,
+        storage: &CudaStorage,
+        layout: &crate::Layout,
+    ) -> Result<CudaStorage> {
+        use crate::backend::BackendStorage;
+        // F32 accumulation (candle default) matches llama.cpp's BF16 GEMM compute type.
+        let w_bf16 = self.dequantize_bf16(n * k)?;
+        let rhs_l = crate::Layout::new((k, n).into(), vec![1, k], 0).broadcast_as((b, k, n))?;
+        // Native-BF16 activations are used as-is: no input cast and the BF16 GEMM
+        // output stays BF16, so the whole F16 round-trip of casts disappears.
+        if storage.dtype() == DType::BF16 && layout.is_contiguous() {
+            return storage.matmul(&w_bf16, (b, m, n, k), layout, &rhs_l);
+        }
+        let act = storage.to_dtype(layout, DType::BF16)?;
+        let act_l = crate::Layout::contiguous(layout.shape().clone());
+        act.matmul(&w_bf16, (b, m, n, k), &act_l, &rhs_l)
     }
 }
 
