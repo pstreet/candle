@@ -2266,10 +2266,28 @@ impl BackendStorage for CudaStorage {
                         .unwrap_or(256)
                 });
                 if b * m >= lt_min {
-                    unsafe {
+                    let lt_r = unsafe {
                         gemm_strided_batched_f16_lt(&self.device.blas_lt, cfg, rhs, lhs, &mut out)
                     }
-                    .w()?;
+                    .w();
+                    if let Err(e) = lt_r {
+                        let compute = if std::env::var("CANDLE_LT_COMPUTE")
+                            .map(|v| v == "32")
+                            .unwrap_or(false)
+                        {
+                            "32F"
+                        } else {
+                            "16F"
+                        };
+                        eprintln!(
+                            "LTMUL fallback m={} n={} k={} batch={} compute={} err={:?}; using plain rocBLAS",
+                            cfg.gemm.m, cfg.gemm.n, cfg.gemm.k, b, compute, e
+                        );
+                        unsafe {
+                            gemm_strided_batched_f16(&self.device.blas, cfg, rhs, lhs, &mut out)
+                        }
+                        .w()?;
+                    }
                 } else {
                     unsafe { gemm_strided_batched_f16(&self.device.blas, cfg, rhs, lhs, &mut out) }
                         .w()?;
