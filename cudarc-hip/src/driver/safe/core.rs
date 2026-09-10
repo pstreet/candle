@@ -977,6 +977,23 @@ impl CudaStream {
         Ok(slice)
     }
 
+    /// Typed managed upload for plain (non-quantized) weight tensors: same
+    /// host fill plus prefetch as [Self::clone_htod_managed] without padding.
+    pub fn clone_htod_managed_typed<T: DeviceRepr>(
+        &self,
+        src: &[T],
+    ) -> Result<CudaSlice<T>, DriverError> {
+        let slice = unsafe { self.alloc_managed::<T>(src.len()) }?;
+        if src.is_empty() {
+            return Ok(slice);
+        }
+        let dst =
+            unsafe { std::slice::from_raw_parts_mut(slice.cu_device_ptr as *mut T, src.len()) };
+        unsafe { std::ptr::copy_nonoverlapping(src.as_ptr(), dst.as_mut_ptr(), src.len()) };
+        self.prefetch_to_device(&slice)?;
+        Ok(slice)
+    }
+
     pub fn memset_zeros<T: DeviceRepr + ValidAsZeroBits, Dst: DevicePtrMut<T>>(
         &self,
         dst: &mut Dst,

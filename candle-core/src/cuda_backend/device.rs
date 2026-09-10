@@ -158,6 +158,80 @@ impl CudaDevice {
         self.stream.clone_htod_managed(src, padded_len).w()
     }
 
+    /// Typed managed upload for plain safetensors weights: host-visible memory
+    /// filled from the host, then prefetched to the device. No padding, unlike
+    /// the quantized path above.
+    #[cfg(feature = "rocm")]
+    pub fn clone_htod_managed_typed<T: cudarc::driver::DeviceRepr>(
+        &self,
+        src: &[T],
+    ) -> Result<cudarc::driver::CudaSlice<T>> {
+        self.stream.clone_htod_managed_typed(src).w()
+    }
+
+    /// Managed variant of the trait's `storage_from_slice`, for safetensors
+    /// weights only. Kept separate because `storage_from_slice` also serves
+    /// activations and intermediates, which must stay on the copy path.
+    #[cfg(feature = "rocm")]
+    pub fn storage_from_slice_managed<T: crate::WithDType>(&self, s: &[T]) -> Result<CudaStorage> {
+        let slice = match T::cpu_storage_ref(s) {
+            CpuStorageRef::U8(storage) => {
+                let data = self.clone_htod_managed_typed(storage)?;
+                CudaStorageSlice::U8(data)
+            }
+            CpuStorageRef::U32(storage) => {
+                let data = self.clone_htod_managed_typed(storage)?;
+                CudaStorageSlice::U32(data)
+            }
+            CpuStorageRef::I16(storage) => {
+                let data = self.clone_htod_managed_typed(storage)?;
+                CudaStorageSlice::I16(data)
+            }
+            CpuStorageRef::I32(storage) => {
+                let data = self.clone_htod_managed_typed(storage)?;
+                CudaStorageSlice::I32(data)
+            }
+            CpuStorageRef::I64(storage) => {
+                let data = self.clone_htod_managed_typed(storage)?;
+                CudaStorageSlice::I64(data)
+            }
+            CpuStorageRef::BF16(storage) => {
+                let data = self.clone_htod_managed_typed(storage)?;
+                CudaStorageSlice::BF16(data)
+            }
+            CpuStorageRef::F16(storage) => {
+                let data = self.clone_htod_managed_typed(storage)?;
+                CudaStorageSlice::F16(data)
+            }
+            CpuStorageRef::F32(storage) => {
+                let data = self.clone_htod_managed_typed(storage)?;
+                CudaStorageSlice::F32(data)
+            }
+            CpuStorageRef::F64(storage) => {
+                let data = self.clone_htod_managed_typed(storage)?;
+                CudaStorageSlice::F64(data)
+            }
+            CpuStorageRef::F8E4M3(storage) => {
+                let data = self.clone_htod_managed_typed(storage)?;
+                CudaStorageSlice::F8E4M3(data)
+            }
+            CpuStorageRef::F4(_)
+            | CpuStorageRef::F6E2M3(_)
+            | CpuStorageRef::F6E3M2(_)
+            | CpuStorageRef::F8E8M0(_) => {
+                return Err(CudaError::UnsupportedDtype {
+                    dtype: T::DTYPE,
+                    op: "storage_from_slice_managed",
+                }
+                .into());
+            }
+        };
+        Ok(CudaStorage {
+            slice,
+            device: self.clone(),
+        })
+    }
+
     pub fn enable_cuda_graph_htod_cache(&self) -> CudaGraphHtodCacheGuard {
         CUDA_GRAPH_HTOD_CACHE_DEPTH.with(|depth| depth.set(depth.get() + 1));
         CudaGraphHtodCacheGuard

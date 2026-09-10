@@ -10,6 +10,8 @@
 //! `Tensor::save_safetensors` method.
 //!
 use crate::op::BackpropOp;
+#[cfg(feature = "rocm")]
+use crate::shape::ShapeWithOneHole;
 use crate::storage::Storage;
 use crate::tensor::from_storage;
 use crate::{DType, Device, Error, Result, Tensor, WithDType};
@@ -120,7 +122,7 @@ fn convert_slice<T: WithDType>(data: &[u8], shape: &[usize], device: &Device) ->
         // was correctly aligned.
         let data: &[T] =
             unsafe { std::slice::from_raw_parts(data.as_ptr() as *const T, elem_count) };
-        Tensor::from_slice(data, shape, device)
+        tensor_from_slice(data, shape, device)
     } else {
         // XXX: We need to specify `T` here, otherwise the compiler will infer u8 because of the following cast
         // Making this vector too small to fit a full f16/f32/f64 weights, resulting in out-of-bounds access
@@ -133,8 +135,24 @@ fn convert_slice<T: WithDType>(data: &[u8], shape: &[usize], device: &Device) ->
             std::ptr::copy_nonoverlapping(data.as_ptr(), c.as_mut_ptr() as *mut u8, data.len());
             c.set_len(elem_count)
         }
-        Tensor::from_slice(&c, shape, device)
+        tensor_from_slice(&c, shape, device)
     }
+}
+
+// Weight-only upload: safetensors file bytes live long enough to be filled
+// from the host, so route them through managed memory when opted in.
+// Activations and intermediates keep using `Tensor::from_slice/from_vec`.
+fn tensor_from_slice<T: WithDType>(data: &[T], shape: &[usize], device: &Device) -> Result<Tensor> {
+    #[cfg(feature = "rocm")]
+    if let Device::Cuda(dev) = device {
+        if std::env::var("MISTRALRS_MANAGED_WEIGHTS").is_ok_and(|v| v == "1") {
+            let shape = shape.into_shape(data.len())?;
+            let storage = dev.storage_from_slice_managed(data)?;
+            let op = BackpropOp::none();
+            return Ok(from_storage(Storage::Cuda(storage), shape, op, false));
+        }
+    }
+    Tensor::from_slice(data, shape, device)
 }
 
 fn convert_slice_with_cast<T: Sized + Copy, U: WithDType, F: Fn(T) -> Result<U>>(
@@ -151,7 +169,7 @@ fn convert_slice_with_cast<T: Sized + Copy, U: WithDType, F: Fn(T) -> Result<U>>
         let data: &[T] =
             unsafe { std::slice::from_raw_parts(data.as_ptr() as *const T, elem_count) };
         let data = data.iter().map(|t| conv(*t)).collect::<Result<Vec<_>>>()?;
-        Tensor::from_vec(data, shape, device)
+        tensor_from_slice(&data, shape, device)
     } else {
         // XXX: We need to specify `T` here, otherwise the compiler will infer u8 because of the following cast
         // Making this vector too small to fit a full f16/f32/f64 weights, resulting in out-of-bounds access
@@ -165,7 +183,7 @@ fn convert_slice_with_cast<T: Sized + Copy, U: WithDType, F: Fn(T) -> Result<U>>
             c.set_len(elem_count)
         }
         let c = c.into_iter().map(conv).collect::<Result<Vec<_>>>()?;
-        Tensor::from_vec(c, shape, device)
+        tensor_from_slice(&c, shape, device)
     }
 }
 
@@ -612,6 +630,40 @@ impl MmapedFile {
 mod tests {
     use super::*;
     use std::collections::HashMap;
+
+    #[cfg(any(feature = "cuda", feature = "rocm"))]
+    #[test]
+    fn managed_safetensors_upload_matches_copy() -> Result<()> {
+        let dev = Device::new_cuda(0)?;
+        let f32_vals: Vec<f32> = (0..64).map(|v| v as f32 * 0.5).collect();
+        let f16_vals: Vec<half::f16> = (0..32)
+            .map(|v| half::f16::from_f32(v as f32 * 0.25))
+            .collect();
+        let f32_t = Tensor::from_vec(f32_vals.clone(), (8, 8), &Device::Cpu)?;
+        let f16_t = Tensor::from_vec(f16_vals.clone(), (8, 4), &Device::Cpu)?;
+        let bytes = st::serialize([("f32", &f32_t), ("f16", &f16_t)], None)?;
+        std::env::set_var("MISTRALRS_MANAGED_WEIGHTS", "1");
+        let managed = load_buffer(&bytes, &dev)?;
+        std::env::remove_var("MISTRALRS_MANAGED_WEIGHTS");
+        let baseline = load_buffer(&bytes, &dev)?;
+        assert_eq!(
+            managed.get("f32").unwrap().to_vec2::<f32>()?,
+            baseline.get("f32").unwrap().to_vec2::<f32>()?,
+        );
+        assert_eq!(
+            managed.get("f16").unwrap().to_vec2::<half::f16>()?,
+            baseline.get("f16").unwrap().to_vec2::<half::f16>()?,
+        );
+        assert_eq!(
+            managed.get("f32").unwrap().to_vec2::<f32>()?,
+            f32_t.to_vec2::<f32>()?,
+        );
+        assert_eq!(
+            managed.get("f16").unwrap().to_vec2::<half::f16>()?,
+            f16_t.to_vec2::<half::f16>()?,
+        );
+        Ok(())
+    }
 
     #[test]
     fn save_single_tensor() {
