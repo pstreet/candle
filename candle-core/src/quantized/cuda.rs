@@ -1187,9 +1187,56 @@ pub fn load_quantized<T: super::GgmlType + Send + Sync + 'static>(
     }))
 }
 
+pub fn load_quantized_managed<T: super::GgmlType + Send + Sync + 'static>(
+    device: &CudaDevice,
+    data: &[T],
+) -> Result<super::QStorage> {
+    #[cfg(feature = "rocm")]
+    {
+        let data = unsafe {
+            std::slice::from_raw_parts(data.as_ptr() as *const u8, core::mem::size_of_val(data))
+        };
+        let dtype = T::DTYPE;
+        let padded_len = data.len() + MATRIX_ROW_PADDING * dtype.type_size() / dtype.block_size();
+        let inner = device.clone_htod_managed(data, padded_len)?;
+        Ok(QStorage::Cuda(QCudaStorage {
+            data: PaddedCudaSlice {
+                inner,
+                len: data.len(),
+            },
+            device: device.clone(),
+            dtype,
+        }))
+    }
+    #[cfg(not(feature = "rocm"))]
+    {
+        load_quantized(device, data)
+    }
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
+
+    #[test]
+    fn cuda_managed_upload_roundtrip() -> Result<()> {
+        let dev = CudaDevice::new(0)?;
+        let vs: Vec<f32> = (0..1024).map(|v| v as f32 * 0.5).collect();
+        let (managed, baseline) = match (
+            load_quantized_managed(&dev, &vs)?,
+            load_quantized(&dev, &vs)?,
+        ) {
+            (QStorage::Cuda(managed), QStorage::Cuda(baseline)) => (managed, baseline),
+            _ => unreachable!("managed upload test requires the cuda storage backend"),
+        };
+        assert_eq!(managed.data()?, baseline.data()?);
+        let raw: Vec<u8> = vs.iter().flat_map(|v| v.to_le_bytes()).collect();
+        assert_eq!(&managed.data()?[..raw.len()], &raw[..]);
+        let dq = managed.dequantize(vs.len())?;
+        let back: Vec<f32> = dev.clone_dtoh(dq.as_cuda_slice::<f32>()?)?;
+        assert_eq!(back, vs);
+        Ok(())
+    }
 
     #[test]
     fn cuda_quantize_q8_1() -> Result<()> {

@@ -37,6 +37,10 @@ pub const CU_MEMHOSTALLOC_PORTABLE: c_uint = 0x1;
 pub const CU_MEMHOSTALLOC_DEVICEMAP: c_uint = 0x2;
 pub const CU_MEMHOSTALLOC_WRITECOMBINED: c_uint = 0x4;
 
+// `hipMemAttach` flag values for `hipMallocManaged`.
+pub const HIP_MEM_ATTACH_GLOBAL: c_uint = 0x1;
+pub const HIP_MEM_ATTACH_HOST: c_uint = 0x2;
+
 // Driver-API result codes, matching `hipError_t` discriminants.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(i32)]
@@ -140,6 +144,13 @@ extern "C" {
 
     pub fn hipMalloc(ptr: *mut CUdeviceptr, sizeInBytes: usize) -> c_int;
     pub fn hipMallocAsync(dev_ptr: *mut CUdeviceptr, size: usize, stream: CUstream) -> c_int;
+    pub fn hipMallocManaged(dev_ptr: *mut *mut c_void, size: usize, flags: c_uint) -> c_int;
+    pub fn hipMemPrefetchAsync(
+        dev_ptr: *const c_void,
+        count: usize,
+        dst_device: c_int,
+        stream: CUstream,
+    ) -> c_int;
     pub fn hipFree(ptr: CUdeviceptr) -> c_int;
     pub fn hipFreeAsync(ptr: CUdeviceptr, stream: CUstream) -> c_int;
     pub fn hipMemcpy(

@@ -144,6 +144,20 @@ impl CudaDevice {
         self.stream.alloc_zeros::<T>(len).w()
     }
 
+    /// Managed-memory upload: `src` is filled into host-visible device memory
+    /// with zero padding up to `padded_len`, then prefetched to the device.
+    /// Used for GGUF weight tensors to skip the host-to-device copy.
+    /// Only `cudarc-hip` implements this; other backends fall back in
+    /// `quantized::cuda::load_quantized_managed`.
+    #[cfg(feature = "rocm")]
+    pub fn clone_htod_managed(
+        &self,
+        src: &[u8],
+        padded_len: usize,
+    ) -> Result<cudarc::driver::CudaSlice<u8>> {
+        self.stream.clone_htod_managed(src, padded_len).w()
+    }
+
     pub fn enable_cuda_graph_htod_cache(&self) -> CudaGraphHtodCacheGuard {
         CUDA_GRAPH_HTOD_CACHE_DEPTH.with(|depth| depth.set(depth.get() + 1));
         CudaGraphHtodCacheGuard

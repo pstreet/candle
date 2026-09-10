@@ -136,6 +136,51 @@ impl QStorage {
         }
     }
 
+    pub fn from_data_managed(
+        data: Cow<'_, [u8]>,
+        device: &Device,
+        dtype: GgmlDType,
+    ) -> Result<Self> {
+        let data: &[u8] = &data;
+        match device {
+            Device::Cpu => Ok(Self::Cpu(dtype.from_data(Cow::Borrowed(data)))),
+            Device::Metal(d) => match dtype {
+                GgmlDType::F32 => metal::load_quantized(d, as_t_slice::<f32>(data)),
+                GgmlDType::F16 => metal::load_quantized(d, as_t_slice::<f16>(data)),
+                GgmlDType::Q4_0 => metal::load_quantized(d, as_t_slice::<BlockQ4_0>(data)),
+                GgmlDType::Q4_1 => metal::load_quantized(d, as_t_slice::<BlockQ4_1>(data)),
+                GgmlDType::Q5_0 => metal::load_quantized(d, as_t_slice::<BlockQ5_0>(data)),
+                GgmlDType::Q5_1 => metal::load_quantized(d, as_t_slice::<BlockQ5_1>(data)),
+                GgmlDType::Q8_0 => metal::load_quantized(d, as_t_slice::<BlockQ8_0>(data)),
+                GgmlDType::Q8_1 => metal::load_quantized(d, as_t_slice::<BlockQ8_1>(data)),
+                GgmlDType::Q2K => metal::load_quantized(d, as_t_slice::<BlockQ2K>(data)),
+                GgmlDType::Q3K => metal::load_quantized(d, as_t_slice::<BlockQ3K>(data)),
+                GgmlDType::Q4K => metal::load_quantized(d, as_t_slice::<BlockQ4K>(data)),
+                GgmlDType::Q5K => metal::load_quantized(d, as_t_slice::<BlockQ5K>(data)),
+                GgmlDType::Q6K => metal::load_quantized(d, as_t_slice::<BlockQ6K>(data)),
+                GgmlDType::Q8K => metal::load_quantized(d, as_t_slice::<BlockQ8K>(data)),
+                GgmlDType::BF16 => metal::load_quantized(d, as_t_slice::<bf16>(data)),
+            },
+            Device::Cuda(d) => match dtype {
+                GgmlDType::F32 => cuda::load_quantized_managed(d, as_t_slice::<f32>(data)),
+                GgmlDType::F16 => cuda::load_quantized_managed(d, as_t_slice::<f16>(data)),
+                GgmlDType::Q4_0 => cuda::load_quantized_managed(d, as_t_slice::<BlockQ4_0>(data)),
+                GgmlDType::Q4_1 => cuda::load_quantized_managed(d, as_t_slice::<BlockQ4_1>(data)),
+                GgmlDType::Q5_0 => cuda::load_quantized_managed(d, as_t_slice::<BlockQ5_0>(data)),
+                GgmlDType::Q5_1 => cuda::load_quantized_managed(d, as_t_slice::<BlockQ5_1>(data)),
+                GgmlDType::Q8_0 => cuda::load_quantized_managed(d, as_t_slice::<BlockQ8_0>(data)),
+                GgmlDType::Q8_1 => cuda::load_quantized_managed(d, as_t_slice::<BlockQ8_1>(data)),
+                GgmlDType::Q2K => cuda::load_quantized_managed(d, as_t_slice::<BlockQ2K>(data)),
+                GgmlDType::Q3K => cuda::load_quantized_managed(d, as_t_slice::<BlockQ3K>(data)),
+                GgmlDType::Q4K => cuda::load_quantized_managed(d, as_t_slice::<BlockQ4K>(data)),
+                GgmlDType::Q5K => cuda::load_quantized_managed(d, as_t_slice::<BlockQ5K>(data)),
+                GgmlDType::Q6K => cuda::load_quantized_managed(d, as_t_slice::<BlockQ6K>(data)),
+                GgmlDType::Q8K => cuda::load_quantized_managed(d, as_t_slice::<BlockQ8K>(data)),
+                GgmlDType::BF16 => cuda::load_quantized_managed(d, as_t_slice::<bf16>(data)),
+            },
+        }
+    }
+
     fn block_size(&self) -> usize {
         match self {
             QStorage::Cpu(storage) => storage.block_size(),

@@ -4,7 +4,7 @@ use crate::driver::sys;
 use crate::driver::sys::CUstreamCaptureStatus;
 use std::marker::PhantomData;
 use std::ops::RangeBounds;
-use std::os::raw::c_void;
+use std::os::raw::{c_int, c_void};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -686,6 +686,7 @@ impl CudaStream {
             write: None,
             stream: Arc::new(self.clone()),
             graph_owned: true,
+            managed: false,
             marker: PhantomData,
         }
     }
@@ -872,6 +873,7 @@ impl CudaStream {
             // Memory allocated while capturing belongs to the graph; the host
             // must not free it, so mark the slice as graph-owned (no-op drop).
             graph_owned: self.is_capturing(),
+            managed: false,
             stream: Arc::new(self.clone()),
             marker: PhantomData,
         })
@@ -894,6 +896,84 @@ impl CudaStream {
             }
             event_record(&slice.write, self)?;
         }
+        Ok(slice)
+    }
+
+    /// Host-visible device memory via `hipMallocManaged`. The GPU dereferences
+    /// the same allocation, so weights can be filled from the host with a plain
+    /// copy instead of `hipMemcpy`. Falls back to stream-ordered memory while
+    /// capturing, since managed allocation cannot enter a graph.
+    ///
+    /// # Safety
+    /// The caller must ensure `len` covers every element the slice will expose.
+    pub unsafe fn alloc_managed<T: DeviceRepr>(
+        &self,
+        len: usize,
+    ) -> Result<CudaSlice<T>, DriverError> {
+        if len == 0 {
+            let mut empty = CudaSlice::new_empty(Arc::new(self.clone()))?;
+            empty.read = Some(CudaEvent::new_internal(&self.inner.ctx, 0)?);
+            empty.write = Some(CudaEvent::new_internal(&self.inner.ctx, 0)?);
+            return Ok(empty);
+        }
+        if self.is_capturing() {
+            return self.alloc::<T>(len);
+        }
+        self.inner.ctx.bind_to_thread()?;
+        let bytes = len * std::mem::size_of::<T>();
+        self.inner
+            .ctx
+            .alloc_bytes
+            .fetch_add(bytes, Ordering::Release);
+        let ptr = result::alloc_managed(bytes)?;
+        let events = self.new_slice_events()?;
+        Ok(CudaSlice {
+            cu_device_ptr: ptr,
+            len,
+            read: events.read,
+            write: events.write,
+            graph_owned: false,
+            managed: true,
+            stream: Arc::new(self.clone()),
+            marker: PhantomData,
+        })
+    }
+
+    /// Advise the runtime that managed memory will be read on this device, then
+    /// wait for the migration so later kernels never stall on first touch.
+    pub fn prefetch_to_device<T>(&self, slice: &CudaSlice<T>) -> Result<(), DriverError> {
+        if slice.is_empty() {
+            return Ok(());
+        }
+        self.inner.ctx.bind_to_thread()?;
+        unsafe {
+            result::mem_prefetch_async(
+                slice.cu_device_ptr,
+                slice.num_bytes(),
+                self.inner.ctx.ordinal as c_int,
+                self.inner.cu_stream,
+            )?;
+        }
+        self.synchronize()
+    }
+
+    /// Managed equivalent of [Self::clone_htod]: fill `src` plus zero padding up
+    /// to `padded_len` with host writes, then prefetch the whole range.
+    pub fn clone_htod_managed(
+        &self,
+        src: &[u8],
+        padded_len: usize,
+    ) -> Result<CudaSlice<u8>, DriverError> {
+        assert!(padded_len >= src.len());
+        let slice = unsafe { self.alloc_managed::<u8>(padded_len)? };
+        if padded_len == 0 {
+            return Ok(slice);
+        }
+        let dst =
+            unsafe { std::slice::from_raw_parts_mut(slice.cu_device_ptr as *mut u8, padded_len) };
+        dst[..src.len()].copy_from_slice(src);
+        dst[src.len()..].fill(0);
+        self.prefetch_to_device(&slice)?;
         Ok(slice)
     }
 
@@ -1048,6 +1128,9 @@ pub struct CudaSlice<T> {
     /// True for memory allocated during a graph capture: it is owned by the
     /// graph (freed when the graph exec is destroyed), so the host drop is a no-op.
     pub(crate) graph_owned: bool,
+    /// True for `hipMallocManaged` memory: host-visible, freed with synchronous
+    /// `hipFree` rather than the stream-ordered async path.
+    pub(crate) managed: bool,
     pub(crate) marker: PhantomData<*const T>,
 }
 
@@ -1074,7 +1157,7 @@ impl<T> Drop for CudaSlice<T> {
         if let Some(write) = self.write.as_ref() {
             ctx.record_err(self.stream.wait(write));
         }
-        if ctx.has_async_alloc() {
+        if ctx.has_async_alloc() && !self.managed {
             // MRS_POISON_FREE=1: fill the block before returning it to the stream pool
             // so any read-before-full-rewrite of reused memory becomes deterministic NaN.
             if std::env::var("MRS_POISON_FREE").as_deref() == Ok("1") {
@@ -1091,8 +1174,10 @@ impl<T> Drop for CudaSlice<T> {
                 result::free_async(self.cu_device_ptr, self.stream.inner.cu_stream)
             });
         } else {
+            // Managed memory is outside the stream-ordered pool: `hipFreeAsync`
+            // cannot release it, so always take the synchronous path.
             ctx.record_err(self.stream.synchronize());
-            ctx.record_err(unsafe { result::free_sync(self.cu_device_ptr) });
+            ctx.record_err(unsafe { result::free_managed(self.cu_device_ptr) });
         }
     }
 }
@@ -1105,6 +1190,7 @@ impl<T> CudaSlice<T> {
             read: None,
             write: None,
             graph_owned: false,
+            managed: false,
             stream,
             marker: PhantomData,
         })

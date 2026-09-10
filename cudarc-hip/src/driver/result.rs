@@ -50,6 +50,48 @@ pub unsafe fn free_async(ptr: sys::CUdeviceptr, stream: sys::CUstream) -> Result
     check(sys::hipFreeAsync(ptr, stream))
 }
 
+/// Managed memory visible to both host and device.
+///
+/// # Safety
+/// The caller takes ownership of the allocation and must release it exactly
+/// once with [free_managed].
+pub unsafe fn alloc_managed(size_bytes: usize) -> Result<sys::CUdeviceptr, DriverError> {
+    let mut ptr: *mut c_void = std::ptr::null_mut();
+    check(sys::hipMallocManaged(
+        &mut ptr,
+        size_bytes,
+        sys::HIP_MEM_ATTACH_GLOBAL,
+    ))?;
+    Ok(ptr as sys::CUdeviceptr)
+}
+
+/// Release memory returned by [alloc_managed].
+///
+/// # Safety
+/// The pointer must come from [alloc_managed] and not have been freed already.
+pub unsafe fn free_managed(ptr: sys::CUdeviceptr) -> Result<(), DriverError> {
+    check(sys::hipFree(ptr))
+}
+
+/// Advise the runtime that managed memory migrates to `dst_device`.
+///
+/// # Safety
+/// The pointer must reference a live managed allocation covering
+/// `size_bytes`, and the stream must belong to this process.
+pub unsafe fn mem_prefetch_async(
+    ptr: sys::CUdeviceptr,
+    size_bytes: usize,
+    dst_device: c_int,
+    stream: sys::CUstream,
+) -> Result<(), DriverError> {
+    check(sys::hipMemPrefetchAsync(
+        ptr as *const c_void,
+        size_bytes,
+        dst_device,
+        stream,
+    ))
+}
+
 pub unsafe fn malloc_host(size_bytes: usize, flags: c_uint) -> Result<*mut c_void, DriverError> {
     let mut ptr: *mut c_void = std::ptr::null_mut();
     check(sys::hipHostAlloc(&mut ptr, size_bytes, flags))?;
