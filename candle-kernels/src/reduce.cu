@@ -238,7 +238,7 @@ __device__ void softmax(const T * x, T * dst, const int ncols) {
     T max_val = -INFINITY;
 
     for (int col = tid; col < ncols; col += block_size) {
-        const int i = row*ncols + col;
+        const long long i = (long long)row * ncols + col;
         max_val = maxg(max_val, x[i]);
     }
 
@@ -251,7 +251,7 @@ __device__ void softmax(const T * x, T * dst, const int ncols) {
     ACC tmp = 0.;
 
     for (int col = tid; col < ncols; col += block_size) {
-        const int i = row*ncols + col;
+        const long long i = (long long)row * ncols + col;
         const T val = expg(x[i] - max_val);
         tmp += static_cast<ACC>(val);
         dst[i] = val;
@@ -266,7 +266,7 @@ __device__ void softmax(const T * x, T * dst, const int ncols) {
     const ACC inv_tmp = 1. / tmp;
 
     for (int col = tid; col < ncols; col += block_size) {
-        const int i = row*ncols + col;
+        const long long i = (long long)row * ncols + col;
         dst[i] *= inv_tmp;
     }
 }
