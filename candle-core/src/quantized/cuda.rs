@@ -763,6 +763,27 @@ impl QCudaStorage {
         dequantize_bf16(&self.data, self.dtype, elem_count, self.device())
     }
 
+    // Shared ISQ upload tail: managed memory when opted in, plain copy otherwise.
+    fn upload_quantized_data(&self, data: &[u8]) -> Result<PaddedCudaSlice> {
+        let padded_len =
+            data.len() + MATRIX_ROW_PADDING * self.dtype.type_size() / self.dtype.block_size();
+        #[cfg(feature = "rocm")]
+        if std::env::var("MISTRALRS_MANAGED_WEIGHTS").is_ok_and(|v| v == "1") {
+            let inner = self.device.clone_htod_managed(data, padded_len)?;
+            return Ok(PaddedCudaSlice {
+                inner,
+                len: data.len(),
+            });
+        }
+        let mut inner = unsafe { self.device.alloc::<u8>(padded_len)? };
+        self.device
+            .memcpy_htod(data, &mut inner.slice_mut(..data.len()))?;
+        Ok(PaddedCudaSlice {
+            inner,
+            len: data.len(),
+        })
+    }
+
     pub fn quantize(&mut self, src: &CudaStorage) -> Result<()> {
         // Run the quantization on cpu.
         let src = match &src.slice {
@@ -774,15 +795,7 @@ impl QCudaStorage {
         let mut qcpu_storage = crate::Device::Cpu.qzeros(src_len, self.dtype)?;
         qcpu_storage.quantize(&src)?;
         let data = qcpu_storage.data()?;
-        let padded_len =
-            data.len() + MATRIX_ROW_PADDING * self.dtype.type_size() / self.dtype.block_size();
-        let mut inner = unsafe { self.device.alloc::<u8>(padded_len)? };
-        self.device
-            .memcpy_htod(&*data, &mut inner.slice_mut(..data.len()))?;
-        self.data = PaddedCudaSlice {
-            inner,
-            len: data.len(),
-        };
+        self.data = self.upload_quantized_data(&data)?;
         Ok(())
     }
 
@@ -802,15 +815,7 @@ impl QCudaStorage {
         let mut qcpu_storage = crate::Device::Cpu.qzeros(src_len, self.dtype)?;
         qcpu_storage.quantize_imatrix(&src, imatrix_weights, n_per_row)?;
         let data = qcpu_storage.data()?;
-        let padded_len =
-            data.len() + MATRIX_ROW_PADDING * self.dtype.type_size() / self.dtype.block_size();
-        let mut inner = unsafe { self.device.alloc::<u8>(padded_len)? };
-        self.device
-            .memcpy_htod(&*data, &mut inner.slice_mut(..data.len()))?;
-        self.data = PaddedCudaSlice {
-            inner,
-            len: data.len(),
-        };
+        self.data = self.upload_quantized_data(&data)?;
         Ok(())
     }
 
@@ -831,15 +836,7 @@ impl QCudaStorage {
         }
 
         let data = qcpu_storage.data()?;
-        let padded_len =
-            data.len() + MATRIX_ROW_PADDING * self.dtype.type_size() / self.dtype.block_size();
-        let mut inner = unsafe { self.device.alloc::<u8>(padded_len)? };
-        self.device
-            .memcpy_htod(&*data, &mut inner.slice_mut(..data.len()))?;
-        self.data = PaddedCudaSlice {
-            inner,
-            len: data.len(),
-        };
+        self.data = self.upload_quantized_data(&data)?;
         Ok(())
     }
 
@@ -855,15 +852,7 @@ impl QCudaStorage {
         }
 
         let data = qcpu_storage.data()?;
-        let padded_len =
-            data.len() + MATRIX_ROW_PADDING * self.dtype.type_size() / self.dtype.block_size();
-        let mut inner = unsafe { self.device.alloc::<u8>(padded_len)? };
-        self.device
-            .memcpy_htod(&*data, &mut inner.slice_mut(..data.len()))?;
-        self.data = PaddedCudaSlice {
-            inner,
-            len: data.len(),
-        };
+        self.data = self.upload_quantized_data(&data)?;
         Ok(())
     }
 
@@ -1235,6 +1224,26 @@ mod test {
         let dq = managed.dequantize(vs.len())?;
         let back: Vec<f32> = dev.clone_dtoh(dq.as_cuda_slice::<f32>()?)?;
         assert_eq!(back, vs);
+        Ok(())
+    }
+
+    #[test]
+    fn cuda_managed_isq_upload_matches_copy() -> Result<()> {
+        let dev = CudaDevice::new(0)?;
+        let vs: Vec<f32> = (0..1024).map(|v| v as f32 * 0.25).collect();
+        let cpu = crate::CpuStorage::F32(vs.clone());
+        std::env::set_var("MISTRALRS_MANAGED_WEIGHTS", "1");
+        let mut managed = QCudaStorage::zeros(&dev, vs.len(), GgmlDType::Q4_0)?;
+        managed.quantize_onto(&cpu)?;
+        std::env::remove_var("MISTRALRS_MANAGED_WEIGHTS");
+        let mut baseline = QCudaStorage::zeros(&dev, vs.len(), GgmlDType::Q4_0)?;
+        baseline.quantize_onto(&cpu)?;
+        assert_eq!(managed.data()?, baseline.data()?);
+        let dq_managed = managed.dequantize(vs.len())?;
+        let dq_baseline = baseline.dequantize(vs.len())?;
+        let back_managed: Vec<f32> = dev.clone_dtoh(dq_managed.as_cuda_slice::<f32>()?)?;
+        let back_baseline: Vec<f32> = dev.clone_dtoh(dq_baseline.as_cuda_slice::<f32>()?)?;
+        assert_eq!(back_managed, back_baseline);
         Ok(())
     }
 
