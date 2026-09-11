@@ -181,6 +181,30 @@ cargo run --example quantized-qwen3-moe --release --features rocm -- \
 Set `CANDLE_GRAPH_EAGER=1` to run the same capture-safe code path eagerly,
 without recording a graph — useful for isolating graph capture issues.
 
+A few more ROCm knobs, all optional:
+
+```bash
+# F32 accumulation in hipBLASLt GEMMs. The default is F16 accumulation to match
+# llama.cpp, but F16 fails heuristically (INTERNAL_ERROR) on some gfx1151
+# shapes; 32F accum is stable there. On any Lt failure the op falls back to
+# plain rocBLAS automatically.
+export CANDLE_LT_COMPUTE=32
+# GPU arch for kernel builds and NVRTC --offload-arch (default: gfx1151).
+export CANDLE_ROCM_ARCH=gfx1151
+# Batch x token thresholds (default 256 each) selecting the fast paths:
+# hipBLASLt vs plain rocBLAS for F16 GEMMs, and dequant-to-F16 GEMM vs the
+# small-batch kernel for quantized matmuls.
+export CANDLE_LT_MIN_TOKENS=256 CANDLE_DMM_F16_MIN=256
+# With native-BF16 activations, dequantize weights to BF16 and run a BF16 GEMM
+# instead of going through F16 casts; or skip the custom MMQ path entirely.
+export CANDLE_DMM_BF16=1
+export CANDLE_NO_FAST_MMQ=1
+# Allocate quantized weight uploads in HIP managed memory (prefetched to the
+# device) instead of a host-to-device copy. Shared with mistral.rs, which sets
+# the same flag for its weight loading.
+export MISTRALRS_MANAGED_WEIGHTS=1
+```
+
 There are also some wasm examples for whisper and
 [llama2.c](https://github.com/karpathy/llama2.c). You can either build them with
 `trunk` or try them online:

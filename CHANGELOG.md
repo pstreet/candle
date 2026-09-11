@@ -15,6 +15,14 @@ This documents the main changes to the `candle` crate.
   without capture for debugging.
 - `rocm_basics` (candle-core) and `moe_gguf_check` (candle-examples) examples
   as GPU smoke/numerical regression checks.
+- ROCm GEMM stack: hipBLASLt F16/BF16 path with automatic rocBLAS fallback on
+  heuristic failure (`CANDLE_LT_COMPUTE=32` selects F32 accumulation,
+  `CANDLE_LT_MIN_TOKENS` the Lt cutoff), plus large-batch quantized GEMM via
+  dequant-to-F16/BF16 (`CANDLE_DMM_F16_MIN`, `CANDLE_DMM_BF16`) and an
+  opt-out for the custom MMQ path (`CANDLE_NO_FAST_MMQ=1`).
+- ROCm weight loading in HIP managed memory when `MISTRALRS_MANAGED_WEIGHTS=1`
+  (safetensors and ISQ uploads included), and RDNA3 WMMA MMQ prefill kernels
+  with arch-driven host dispatch (`CANDLE_ROCM_ARCH`, default `gfx1151`).
 
 ### Modified
 
