@@ -52,6 +52,7 @@ pub enum CUresult {
     CUDA_ERROR_DEINITIALIZED = 4,
     CUDA_ERROR_NO_DEVICE = 100,
     CUDA_ERROR_UNKNOWN = 999,
+    CUDA_ERROR_NOT_SUPPORTED = 801,
 }
 
 pub type CUmemoryPool = *mut c_void;
@@ -255,6 +256,9 @@ extern "C" {
 
     #[link_name = "hipDeviceGetMemPool"]
     pub fn cuDeviceGetMemPool(pool: *mut CUmemoryPool, device: c_int) -> CUresult;
+
+    #[link_name = "hipMemPoolTrimTo"]
+    pub fn cuMemPoolTrimTo(pool: CUmemoryPool, min_bytes_to_keep: usize) -> CUresult;
 
     #[link_name = "hipDeviceGraphMemTrim"]
     pub fn cuDeviceGraphMemTrim(device: c_int) -> CUresult;
