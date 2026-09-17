@@ -300,3 +300,21 @@ pub unsafe fn cuMemcpyHtoDAsync_v2(
     );
     unsafe { std::mem::transmute::<c_int, CUresult>(code) }
 }
+
+// Same for `cuMemcpyDtoHAsync_v2`.
+#[inline]
+pub unsafe fn cuMemcpyDtoHAsync_v2(
+    dst: *mut c_void,
+    src: CUdeviceptr,
+    size: usize,
+    stream: CUstream,
+) -> CUresult {
+    let code = hipMemcpyAsync(
+        dst,
+        src as *const c_void,
+        size,
+        CU_MEMCPY_DEVICE_TO_HOST,
+        stream,
+    );
+    unsafe { std::mem::transmute::<c_int, CUresult>(code) }
+}
