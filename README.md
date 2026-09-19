@@ -512,9 +512,8 @@ Builds fail with missing `hip/hip_runtime.h` or unresolved `hipMalloc` symbols
 when the toolchain is not discoverable. Export the ROCm environment described
 in the [examples section](#check-out-our-examples) above before building
 (`ROCM_HOME`, `ROCM_PATH`, `CANDLE_ROCM_PATH`, plus `PATH` and
-`LD_LIBRARY_PATH`). If the compute
-capability cannot be auto-detected (no `rocm-agent-scanner`), set it manually,
-e.g. `CANDLE_ROCM_CUDA_ARCH=1030` for RDNA3.5/gfx1151.
+`LD_LIBRARY_PATH`). If the GPU arch is not what you expect, set it manually,
+e.g. `CANDLE_ROCM_ARCH=gfx1151` for RDNA3.5/Strix Halo.
 
 #### ROCm: graph capture errors (HIP error 905 / 900)
 
