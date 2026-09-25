@@ -2719,9 +2719,12 @@ unsafe fn gemm_strided_batched_f16_lt(
 
     // CANDLE_LT_COMPUTE=32 forces F32 accumulation (more widely supported on RDNA);
     // default is F16 accumulation (COMPUTE_16F) to match llama.cpp.
-    let use_32f = std::env::var("CANDLE_LT_COMPUTE")
-        .map(|v| v == "32")
-        .unwrap_or(false);
+    static LT_COMPUTE_32F: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    let use_32f = *LT_COMPUTE_32F.get_or_init(|| {
+        std::env::var("CANDLE_LT_COMPUTE")
+            .map(|v| v == "32")
+            .unwrap_or(false)
+    });
     let compute_type = if use_32f {
         sys::cublasComputeType_t::CUBLAS_COMPUTE_32F
     } else {

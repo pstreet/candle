@@ -180,7 +180,10 @@ impl CudaContext {
         }
         self.capture_arena_alloc_count
             .fetch_add(1, Ordering::Relaxed);
-        if std::env::var("MRS_ARENA_ALLOC_LOG").as_deref() == Ok("1") {
+        static ARENA_ALLOC_LOG: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        if *ARENA_ALLOC_LOG
+            .get_or_init(|| std::env::var("MRS_ARENA_ALLOC_LOG").as_deref() == Ok("1"))
+        {
             eprintln!(
                 "[cudarc] arena_alloc off={offset} size={need} thr={:?}",
                 std::thread::current().id()
