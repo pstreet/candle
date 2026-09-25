@@ -185,10 +185,12 @@ A few more ROCm knobs, all optional:
 
 ```bash
 # F32 accumulation for GEMMs: hipBLASLt and the large-batch dequant-to-F16
-# quantized matmul (prefill) both honor this. The default is F16 accumulation
-# to match llama.cpp, but F16 fails heuristically (INTERNAL_ERROR) on some
-# gfx1151 shapes; 32F accum is stable there. On any Lt failure the op falls
-# back to plain rocBLAS automatically.
+# quantized matmul (prefill) both honor this. Default is F16 accumulation to
+# match llama.cpp. A 2026-09-25 80-shape gfx1151 sweep (examples/lt_probe)
+# found zero 16F heuristic failures on the current stack, so the old "16F
+# fails on some shapes" note is stale; keep the knob for regression checks
+# after ROCm stack updates. On any Lt failure the op falls back to plain
+# rocBLAS automatically.
 export CANDLE_LT_COMPUTE=32
 # GPU arch for kernel builds and NVRTC --offload-arch (default: gfx1151).
 export CANDLE_ROCM_ARCH=gfx1151
