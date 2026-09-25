@@ -1093,7 +1093,14 @@ impl QCudaStorage {
         static GEMM_NS: AtomicU64 = AtomicU64::new(0);
         static CALLS: AtomicU64 = AtomicU64::new(0);
         // F16 accumulation matches llama.cpp's compute type and picks the fast WMMA path on RDNA.
-        crate::cuda_backend::set_gemm_reduced_precision_f16(true);
+        // CANDLE_LT_COMPUTE=32 opts out (F32 accumulation), same knob as the cuBLASLt path.
+        static LT_COMPUTE_32F: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        let use_32f = *LT_COMPUTE_32F.get_or_init(|| {
+            std::env::var("CANDLE_LT_COMPUTE")
+                .map(|v| v == "32")
+                .unwrap_or(false)
+        });
+        crate::cuda_backend::set_gemm_reduced_precision_f16(!use_32f);
         let dbg = std::env::var("MMQ_DEBUG").is_ok();
         let stream = self.device().cuda_stream();
         if dbg {
