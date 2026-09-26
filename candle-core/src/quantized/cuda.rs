@@ -26,6 +26,19 @@ pub fn set_force_dmmv(f: bool) {
     FORCE_DMMV.store(f, std::sync::atomic::Ordering::Relaxed)
 }
 
+static DMM_F16_MIN: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+
+// Resolved CANDLE_DMM_F16_MIN (default 256); pub so downstream dispatch can hand
+// off exactly at the row count where the dequantize-to-F16 GEMM engages.
+pub fn dequant_f16_min_rows() -> usize {
+    *DMM_F16_MIN.get_or_init(|| {
+        std::env::var("CANDLE_DMM_F16_MIN")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(256)
+    })
+}
+
 pub const WARP_SIZE: usize = 32;
 pub const MMQ_X_Q4_0_AMPERE: usize = 4;
 pub const MMQ_Y_Q4_0_AMPERE: usize = 32;
@@ -768,7 +781,7 @@ impl QCudaStorage {
         let padded_len =
             data.len() + MATRIX_ROW_PADDING * self.dtype.type_size() / self.dtype.block_size();
         #[cfg(feature = "rocm")]
-        if std::env::var("MISTRALRS_MANAGED_WEIGHTS").is_ok_and(|v| v == "1") {
+        if std::env::var("CANDLE_MANAGED_WEIGHTS").is_ok_and(|v| v == "1") {
             let inner = self.device.clone_htod_managed(data, padded_len)?;
             return Ok(PaddedCudaSlice {
                 inner,
@@ -1017,13 +1030,7 @@ impl QCudaStorage {
             crate::bail!("mismatch on matmul dim {self_shape:?} {:?}", layout.shape())
         }
 
-        static DMM_F16_MIN: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
-        let dmm_f16_min = *DMM_F16_MIN.get_or_init(|| {
-            std::env::var("CANDLE_DMM_F16_MIN")
-                .ok()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(256)
-        });
+        let dmm_f16_min = dequant_f16_min_rows();
         let out = if FORCE_DMMV.load(std::sync::atomic::Ordering::Relaxed) {
             let data_f32 = self.dequantize(n * k)?;
             let rhs_l = crate::Layout::new((k, n).into(), vec![1, k], 0).broadcast_as((b, k, n))?;
@@ -1101,7 +1108,7 @@ impl QCudaStorage {
                 .unwrap_or(false)
         });
         crate::cuda_backend::set_gemm_reduced_precision_f16(!use_32f);
-        let dbg = std::env::var("MMQ_DEBUG").is_ok();
+        let dbg = std::env::var("CANDLE_MMQ_DEBUG").is_ok();
         let stream = self.device().cuda_stream();
         if dbg {
             stream.synchronize().ok();
@@ -1239,10 +1246,10 @@ mod test {
         let dev = CudaDevice::new(0)?;
         let vs: Vec<f32> = (0..1024).map(|v| v as f32 * 0.25).collect();
         let cpu = crate::CpuStorage::F32(vs.clone());
-        std::env::set_var("MISTRALRS_MANAGED_WEIGHTS", "1");
+        std::env::set_var("CANDLE_MANAGED_WEIGHTS", "1");
         let mut managed = QCudaStorage::zeros(&dev, vs.len(), GgmlDType::Q4_0)?;
         managed.quantize_onto(&cpu)?;
-        std::env::remove_var("MISTRALRS_MANAGED_WEIGHTS");
+        std::env::remove_var("CANDLE_MANAGED_WEIGHTS");
         let mut baseline = QCudaStorage::zeros(&dev, vs.len(), GgmlDType::Q4_0)?;
         baseline.quantize_onto(&cpu)?;
         assert_eq!(managed.data()?, baseline.data()?);

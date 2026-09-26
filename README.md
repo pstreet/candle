@@ -203,9 +203,10 @@ export CANDLE_LT_MIN_TOKENS=256 CANDLE_DMM_F16_MIN=256
 export CANDLE_DMM_BF16=1
 export CANDLE_NO_FAST_MMQ=1
 # Allocate quantized weight uploads in HIP managed memory (prefetched to the
-# device) instead of a host-to-device copy. Shared with mistral.rs, which sets
-# the same flag for its weight loading.
-export MISTRALRS_MANAGED_WEIGHTS=1
+# device) instead of a host-to-device copy. The deployment wrapper sets this
+# alongside mistral.rs's own MISTRALRS_MANAGED_WEIGHTS flag so both sides use
+# managed allocation.
+export CANDLE_MANAGED_WEIGHTS=1
 ```
 
 There are also some wasm examples for whisper and

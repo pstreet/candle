@@ -145,7 +145,7 @@ fn convert_slice<T: WithDType>(data: &[u8], shape: &[usize], device: &Device) ->
 fn tensor_from_slice<T: WithDType>(data: &[T], shape: &[usize], device: &Device) -> Result<Tensor> {
     #[cfg(feature = "rocm")]
     if let Device::Cuda(dev) = device {
-        if std::env::var("MISTRALRS_MANAGED_WEIGHTS").is_ok_and(|v| v == "1") {
+        if std::env::var("CANDLE_MANAGED_WEIGHTS").is_ok_and(|v| v == "1") {
             let shape = shape.into_shape(data.len())?;
             let storage = dev.storage_from_slice_managed(data)?;
             let op = BackpropOp::none();
@@ -642,9 +642,9 @@ mod tests {
         let f32_t = Tensor::from_vec(f32_vals.clone(), (8, 8), &Device::Cpu)?;
         let f16_t = Tensor::from_vec(f16_vals.clone(), (8, 4), &Device::Cpu)?;
         let bytes = st::serialize([("f32", &f32_t), ("f16", &f16_t)], None)?;
-        std::env::set_var("MISTRALRS_MANAGED_WEIGHTS", "1");
+        std::env::set_var("CANDLE_MANAGED_WEIGHTS", "1");
         let managed = load_buffer(&bytes, &dev)?;
-        std::env::remove_var("MISTRALRS_MANAGED_WEIGHTS");
+        std::env::remove_var("CANDLE_MANAGED_WEIGHTS");
         let baseline = load_buffer(&bytes, &dev)?;
         assert_eq!(
             managed.get("f32").unwrap().to_vec2::<f32>()?,

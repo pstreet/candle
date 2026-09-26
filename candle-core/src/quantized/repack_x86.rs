@@ -903,8 +903,8 @@ pub(crate) fn level() -> Option<X86Level> {
     use std::sync::OnceLock;
     static LEVEL: OnceLock<Option<X86Level>> = OnceLock::new();
     *LEVEL.get_or_init(|| {
-        let force_avx2 = std::env::var("MISTRALRS_FORCE_AVX2").as_deref() == Ok("1");
-        let force_vnni = std::env::var("MISTRALRS_FORCE_AVXVNNI").as_deref() == Ok("1");
+        let force_avx2 = std::env::var("CANDLE_FORCE_AVX2").as_deref() == Ok("1");
+        let force_vnni = std::env::var("CANDLE_FORCE_AVXVNNI").as_deref() == Ok("1");
         if !force_avx2
             && !force_vnni
             && is_x86_feature_detected!("avx512f")
