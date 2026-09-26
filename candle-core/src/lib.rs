@@ -65,6 +65,7 @@ pub mod dummy_cuda_backend;
 pub mod dummy_dtype;
 mod dummy_metal_backend;
 pub mod error;
+pub mod gpu;
 mod indexer;
 pub mod layout;
 #[cfg(feature = "metal")]
@@ -100,6 +101,7 @@ pub use device::{Device, DeviceLocation, NdArray};
 pub use dtype::{DType, DTypeParseError, FloatDType, IntDType, WithDType};
 pub use dummy_dtype::{F4, F6E2M3, F6E3M2, F8E8M0};
 pub use error::{Context, Error, Result};
+pub use gpu::GpuArch;
 pub use indexer::{IndexOp, TensorIndexer};
 pub use layout::Layout;
 pub use nditer::NdIter;
@@ -129,6 +131,20 @@ extern crate intel_mkl_src;
 
 #[cfg(feature = "accelerate")]
 extern crate accelerate_src;
+
+// Feature matrix: exactly one GPU backend per binary today.
+// - default / `--no-default-features`-style CPU builds: no GPU backend,
+//   `GpuArch` exists but `resolve` is not compiled.
+// - `cuda`: NVIDIA only. `rocm`: AMD only.
+// - `cuda` + `rocm`: rejected below until single-process multi-vendor lands
+//   (CUDA+HIP coexistence + per-backend device types; see the fork roadmap).
+#[cfg(all(feature = "cuda", feature = "rocm"))]
+compile_error!(
+    "building with both `cuda` and `rocm` is not supported yet: the GPU backend \
+     compiles once for a single vendor. Track the CUDA+HIP coexistence work in \
+     the fork roadmap (TODO.md, multi-backend runtime) and build one backend \
+     per binary until then."
+);
 
 // Under `rocm`, `cudarc-hip` (`cudarc_hip`) re-implements the `cudarc` surface
 // over HIP; alias it so the GPU backend needs no source changes.

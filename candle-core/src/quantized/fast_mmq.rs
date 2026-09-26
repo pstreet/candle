@@ -7,7 +7,7 @@ use std::sync::{Mutex, OnceLock};
 use super::cuda::{QCudaStorage, MATRIX_ROW_PADDING};
 use super::GgmlDType;
 use crate::cuda_backend::DeviceId;
-use crate::{backend::BackendStorage, CudaDevice, CudaStorage, DType, Result, Shape};
+use crate::{backend::BackendStorage, CudaDevice, CudaStorage, DType, GpuArch, Result, Shape};
 
 use cudarc::driver::{CudaSlice, DevicePtr};
 
@@ -57,9 +57,9 @@ fn qk_for(dtype: GgmlDType) -> usize {
 // no other architecture has been validated since, so it stays disabled
 // everywhere rather than shipping wrong results on unproven hardware.
 // Candle-side callers get the dequantize GEMM instead (~28 TFLOPS at 4096
-// rows on gfx1151). Re-enable arch by arch after resyncing the kernels and
-// re-running the bench.
-fn should_use_mmq(_dtype: GgmlDType, _cc: i32, _batch: usize) -> bool {
+// rows on gfx1151). Re-enable arch by arch (the GpuArch parameter is ready
+// for per-arch gating) after resyncing the kernels and re-running the bench.
+fn should_use_mmq(_dtype: GgmlDType, _arch: GpuArch, _batch: usize) -> bool {
     false
 }
 
@@ -195,6 +195,7 @@ fn workspace_ensure(
 
 #[derive(Clone, Copy)]
 struct DeviceInfo {
+    arch: GpuArch,
     cc: i32,
     nsm: i32,
     smpbo: i64,
@@ -203,13 +204,13 @@ struct DeviceInfo {
 
 static DEVICE_INFO: OnceLock<Mutex<HashMap<DeviceId, DeviceInfo>>> = OnceLock::new();
 
-fn get_device_info(dev: &CudaDevice) -> DeviceInfo {
+fn get_device_info(dev: &CudaDevice) -> Result<DeviceInfo> {
     use cudarc::driver::{result, sys};
     let map = DEVICE_INFO.get_or_init(|| Mutex::new(HashMap::new()));
     let key = dev.id();
     let mut guard = map.lock().unwrap();
     if let Some(info) = guard.get(&key) {
-        return *info;
+        return Ok(*info);
     }
     let cu_device = dev.cuda_stream().context().cu_device();
     let major = unsafe {
@@ -248,13 +249,16 @@ fn get_device_info(dev: &CudaDevice) -> DeviceInfo {
     }
     .unwrap_or(32);
     let info = DeviceInfo {
+        // Kernel-bridge encoding the llama.cpp launchers expect; policy code
+        // below matches on `arch` instead.
+        arch: GpuArch::resolve(dev)?,
         cc: major * 100 + minor * 10,
         nsm,
         smpbo: smpbo as i64,
         warp_size,
     };
     guard.insert(key, info);
-    info
+    Ok(info)
 }
 
 // ---------------------------------------------------------------------------
@@ -310,7 +314,7 @@ pub fn try_fwd(
     };
 
     let dev = qstorage.device();
-    if !should_use_mmq(w_dtype, get_device_info(dev).cc, b_size) {
+    if !should_use_mmq(w_dtype, get_device_info(dev)?.arch, b_size) {
         return Ok(None);
     }
     let stream = dev.cuda_stream();
@@ -362,7 +366,7 @@ pub fn try_fwd(
 
     let weight_ptr = qstorage.device_ptr()? as *const std::ffi::c_void;
     let stride_row_x = (k / qk) as i64;
-    let di = get_device_info(dev);
+    let di = get_device_info(dev)?;
 
     let out = unsafe { dev.alloc::<f32>(nrows * b_size)? };
     let stride_col_dst = nrows as i64;

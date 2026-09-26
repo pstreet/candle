@@ -224,6 +224,34 @@ impl CudaContext {
         }
     }
 
+    /// The authoritative AMD arch name, e.g. "gfx1151". May carry feature
+    /// suffixes ("gfx942:sramecc+:xnack-") - strip at ':' before parsing.
+    /// Uses the R0600 ABI: the unversioned symbol fills the legacy struct
+    /// without gcnArchName, and the modern struct's layout is not stable
+    /// across ROCm versions, so the "gfx" string is located by scanning an
+    /// oversized zeroed buffer rather than assuming a field offset.
+    pub fn gcn_arch_name(&self) -> Result<String, DriverError> {
+        let mut buf = vec![0u8; 65536];
+        let ret = unsafe {
+            sys::hipGetDevicePropertiesR0600(buf.as_mut_ptr().cast(), self.ordinal as i32)
+        };
+        result::check(ret)?;
+        let end = buf
+            .windows(3)
+            .position(|w| w == b"gfx")
+            .map(|at| {
+                let start = at + 3;
+                let stop = buf[start..]
+                    .iter()
+                    .position(|&c| !(c.is_ascii_alphanumeric() || c == b':'))
+                    .map(|len| start + len)
+                    .unwrap_or(buf.len());
+                String::from_utf8_lossy(&buf[at..stop]).into_owned()
+            })
+            .ok_or_else(|| DriverError(sys::CUresult::CUDA_ERROR_INVALID_VALUE))?;
+        Ok(end)
+    }
+
     pub fn uuid(&self) -> Result<sys::CUuuid, DriverError> {
         Ok(sys::CUuuid::default())
     }

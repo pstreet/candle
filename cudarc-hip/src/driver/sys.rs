@@ -141,6 +141,11 @@ extern "C" {
     pub fn hipDeviceGet(dev: *mut CUdevice, ordinal: i32) -> c_int;
     pub fn hipDeviceGetAttribute(pi: *mut i32, attr: i32, deviceId: i32) -> c_int;
     pub fn hipGetDeviceProperties(prop: *mut CUdeviceProp, deviceId: i32) -> c_int;
+    // Modern ROCm 6.0 ABI: the header maps hipGetDeviceProperties to this,
+    // and the unversioned symbol only fills the legacy (pre-gcnArchName)
+    // struct. Takes an opaque pointer so callers can pass an oversized
+    // buffer - the modern struct layout is not stable across versions.
+    pub fn hipGetDevicePropertiesR0600(prop: *mut c_void, deviceId: i32) -> c_int;
     pub fn hipMemGetInfo(free: *mut usize, total: *mut usize) -> c_int;
 
     pub fn hipMalloc(ptr: *mut CUdeviceptr, sizeInBytes: usize) -> c_int;

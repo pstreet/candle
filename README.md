@@ -209,6 +209,34 @@ export CANDLE_NO_FAST_MMQ=1
 export CANDLE_MANAGED_WEIGHTS=1
 ```
 
+## GPU architecture identity
+
+`candle_core::GpuArch` is the typed device identity all GPU policy code
+matches on - never raw compute-capability ints:
+
+- `Cuda { sm: (major, minor) }` - NVIDIA, from compute caps (e.g. `(9, 0)` Hopper).
+- `Rocm { gfx: (family, major, step) }` - AMD, parsed from the authoritative
+  `gcnArchName` (`gfx1151 -> (11, 5, 1)`, `gfx942 -> (9, 4, 2)`); one field
+  per suffix char, letters hex-coded (`gfx90a -> (9, 0, 10)`). The family
+  alone carries policy granularity (9 CDNA, 11 RDNA3/3.5, 12 RDNA4); the
+  step distinguishes sibling parts the HIP-synthetic compute caps collide
+  (gfx1150 vs gfx1151).
+- `Vulkan` - reserved for a future backend; identity will come from
+  `VkPhysicalDeviceProperties`.
+
+On ROCm, resolution goes through the `hipGetDevicePropertiesR0600` ABI and
+locates the `gfx` string by scanning - the unversioned symbol only fills the
+legacy struct (no `gcnArchName`), and the modern struct's field offsets are
+not stable across ROCm versions. If the name is unparseable, resolution
+falls back to the synthetic compute-cap family with zeroed step fields.
+
+Build feature matrix: exactly one GPU backend per binary. Default builds
+are CPU-only (`GpuArch` exists, `resolve` is not compiled); `cuda` and
+`rocm` select the NVIDIA and AMD backends; `cuda`+`rocm` together is a
+compile error until single-process multi-vendor lands (see the fork
+roadmap). The HIP-synthetic `cc` ints (gfx1151 -> 1150) survive only as the
+kernel-bridge encoding the llama.cpp-derived launchers expect.
+
 There are also some wasm examples for whisper and
 [llama2.c](https://github.com/karpathy/llama2.c). You can either build them with
 `trunk` or try them online:
