@@ -78,7 +78,7 @@ fn quantize_q8_1(
     let dst_row_size_bytes = num_blocks_per_row * q8_1_type_size;
 
     const CHUNK_SIZE: usize = 65535; // gridDim.y limit
-    let func = dev.get_or_load_func("quantize_q8_1", &candle_kernels::QUANTIZED)?;
+    let func = dev.get_or_load_func("quantize_q8_1", &crate::cuda_backend::kernels::QUANTIZED)?;
 
     let mut rows_processed = 0;
     while rows_processed < total_rows {
@@ -146,7 +146,7 @@ fn dequantize_f32(
         GgmlDType::Q8K => ("dequantize_block_q8_K_f32", true, 32, nb),
         _ => crate::bail!("unsupported dtype for dequantize {dtype:?}"),
     };
-    let func = dev.get_or_load_func(kernel_name, &candle_kernels::QUANTIZED)?;
+    let func = dev.get_or_load_func(kernel_name, &crate::cuda_backend::kernels::QUANTIZED)?;
     let dst = unsafe { dev.alloc::<f32>(elem_count)? };
     // See e.g.
     // https://github.com/ggerganov/llama.cpp/blob/cbbd1efa06f8c09f9dff58ff9d9af509cc4c152b/ggml-cuda.cu#L7270
@@ -206,7 +206,7 @@ fn dequantize_f16(
         GgmlDType::Q8K => ("dequantize_block_q8_K_f16", true, 32, nb),
         _ => crate::bail!("unsupported dtype for dequantize {dtype:?}"),
     };
-    let func = dev.get_or_load_func(kernel_name, &candle_kernels::QUANTIZED)?;
+    let func = dev.get_or_load_func(kernel_name, &crate::cuda_backend::kernels::QUANTIZED)?;
     let dst = unsafe { dev.alloc::<f16>(elem_count)? };
     // See e.g.
     // https://github.com/ggerganov/llama.cpp/blob/cbbd1efa06f8c09f9dff58ff9d9af509cc4c152b/ggml-cuda.cu#L7270
@@ -266,7 +266,7 @@ fn dequantize_bf16(
         GgmlDType::Q8K => ("dequantize_block_q8_K_bf16", true, 32, nb),
         _ => crate::bail!("unsupported dtype for dequantize {dtype:?}"),
     };
-    let func = dev.get_or_load_func(kernel_name, &candle_kernels::QUANTIZED)?;
+    let func = dev.get_or_load_func(kernel_name, &crate::cuda_backend::kernels::QUANTIZED)?;
     let dst = unsafe { dev.alloc::<bf16>(elem_count)? };
     let cfg = cudarc::driver::LaunchConfig {
         grid_dim: (num_blocks as u32, 1, 1),
@@ -356,7 +356,7 @@ fn get_rows(
         GgmlDType::Q6K => ("get_rows_q6_K", 64, hidden / dtype.block_size(), false),
         _ => crate::bail!("unsupported dtype for CUDA quantized embedding {dtype:?}"),
     };
-    let func = dev.get_or_load_func(kernel_name, &candle_kernels::QUANTIZED)?;
+    let func = dev.get_or_load_func(kernel_name, &crate::cuda_backend::kernels::QUANTIZED)?;
     let ids_len = ids.len();
     let dst = unsafe { dev.alloc::<f32>(ids_len * hidden)? };
     if ids_len == 0 {
@@ -414,7 +414,7 @@ fn dequantize_mul_mat_vec(
         GgmlDType::Q6K => "dequantize_mul_mat_vec_q6_k",
         _ => crate::bail!("unsupported dtype for quantized matmul {dtype:?}"),
     };
-    let func = dev.get_or_load_func(kernel_name, &candle_kernels::QUANTIZED)?;
+    let func = dev.get_or_load_func(kernel_name, &crate::cuda_backend::kernels::QUANTIZED)?;
     let dst = unsafe { dev.alloc::<f32>(nrows)? };
     let block_num_y = ceil_div(nrows, GGML_CUDA_MMV_Y);
     let cfg = cudarc::driver::LaunchConfig {
@@ -472,7 +472,7 @@ fn mul_mat_vec_via_q8_1(
         _ => crate::bail!("unsupported dtype for quantized matmul {dtype:?}"),
     };
     let kernel_name = format!("{kernel_name}{b_size}");
-    let func = dev.get_or_load_func(&kernel_name, &candle_kernels::QUANTIZED)?;
+    let func = dev.get_or_load_func(&kernel_name, &crate::cuda_backend::kernels::QUANTIZED)?;
     let dst = dev.alloc_zeros::<f32>(nrows * b_size)?;
     // https://github.com/ggerganov/llama.cpp/blob/facb8b56f8fd3bb10a693bf0943ae9d69d0828ef/ggml-cuda/mmvq.cu#L98
     let (nblocks, nwarps) = match b_size {
@@ -544,7 +544,7 @@ fn mul_mat_via_q8_1(
         GgmlDType::Q6K => ("mul_mat_q6_K", 64, 64),
         _ => crate::bail!("unsupported dtype for quantized matmul {dtype:?}"),
     };
-    let func = dev.get_or_load_func(kernel_name, &candle_kernels::QUANTIZED)?;
+    let func = dev.get_or_load_func(kernel_name, &crate::cuda_backend::kernels::QUANTIZED)?;
     let dst = dev.alloc_zeros::<f32>(x_rows * y_cols)?;
     let cfg = cudarc::driver::LaunchConfig {
         grid_dim: (
@@ -619,7 +619,7 @@ fn indexed_moe_forward_fused_q8_1_input(
         GgmlDType::Q8_0 => "indexed_moe_forward_q8_0_q8_1",
         _ => crate::bail!("unsupported dtype for indexed_moe_forward {w_dtype:?}"),
     };
-    let func = dev.get_or_load_func(kernel_name, &candle_kernels::QUANTIZED)?;
+    let func = dev.get_or_load_func(kernel_name, &crate::cuda_backend::kernels::QUANTIZED)?;
     let (nblocks, nwarps) = (n as u32, 4);
     let cfg = cudarc::driver::LaunchConfig {
         grid_dim: (nblocks, batch as u32, topk as u32),
@@ -780,7 +780,7 @@ impl QCudaStorage {
     fn upload_quantized_data(&self, data: &[u8]) -> Result<PaddedCudaSlice> {
         let padded_len =
             data.len() + MATRIX_ROW_PADDING * self.dtype.type_size() / self.dtype.block_size();
-        #[cfg(feature = "rocm")]
+        #[cfg(all(feature = "rocm", not(feature = "cuda")))]
         if std::env::var("CANDLE_MANAGED_WEIGHTS").is_ok_and(|v| v == "1") {
             let inner = self.device.clone_htod_managed(data, padded_len)?;
             return Ok(PaddedCudaSlice {
@@ -1194,7 +1194,7 @@ pub fn load_quantized_managed<T: super::GgmlType + Send + Sync + 'static>(
     device: &CudaDevice,
     data: &[T],
 ) -> Result<super::QStorage> {
-    #[cfg(feature = "rocm")]
+    #[cfg(all(feature = "rocm", not(feature = "cuda")))]
     {
         let data = unsafe {
             std::slice::from_raw_parts(data.as_ptr() as *const u8, core::mem::size_of_val(data))
@@ -1211,7 +1211,9 @@ pub fn load_quantized_managed<T: super::GgmlType + Send + Sync + 'static>(
             dtype,
         }))
     }
-    #[cfg(not(feature = "rocm"))]
+    // Single-vendor rocm takes the managed path above; every other
+    // shape (cuda-only, and the dual build's NVIDIA role) copies.
+    #[cfg(not(all(feature = "rocm", not(feature = "cuda"))))]
     {
         load_quantized(device, data)
     }

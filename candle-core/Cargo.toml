@@ -18,6 +18,7 @@ objc2-metal = { workspace = true, optional = true }
 objc2-foundation = { workspace = true, optional = true }
 cudarc = { workspace = true, optional = true }
 cudarc-hip = { workspace = true, optional = true }
+candle-kernels-cuda = { path = "../candle-kernels-cuda", optional = true }
 gemm = { workspace = true }
 half = { workspace = true, features = ["zerocopy"] }
 float8 = { workspace = true }
@@ -51,6 +52,9 @@ half = { workspace = true }
 [features]
 default = []
 cuda = ["cudarc", "dep:candle-kernels", "candle-ug?/cuda"]
+# Multi-vendor build: both backends in one binary. `cuda_backend` becomes the
+# NVIDIA role (real cudarc + the PTX twin crate), `hip_backend` the AMD role.
+"cuda+rocm" = ["cuda", "rocm", "dep:candle-kernels-cuda"]
 rocm = [
     "dep:cudarc-hip",
     "dep:candle-kernels",

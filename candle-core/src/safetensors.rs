@@ -143,7 +143,7 @@ fn convert_slice<T: WithDType>(data: &[u8], shape: &[usize], device: &Device) ->
 // from the host, so route them through managed memory when opted in.
 // Activations and intermediates keep using `Tensor::from_slice/from_vec`.
 fn tensor_from_slice<T: WithDType>(data: &[T], shape: &[usize], device: &Device) -> Result<Tensor> {
-    #[cfg(feature = "rocm")]
+    #[cfg(all(feature = "rocm", not(feature = "cuda")))]
     if let Device::Cuda(dev) = device {
         if std::env::var("CANDLE_MANAGED_WEIGHTS").is_ok_and(|v| v == "1") {
             let shape = shape.into_shape(data.len())?;

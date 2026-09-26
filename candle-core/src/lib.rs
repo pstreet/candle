@@ -66,6 +66,8 @@ pub mod dummy_dtype;
 mod dummy_metal_backend;
 pub mod error;
 pub mod gpu;
+#[cfg(all(feature = "cuda", feature = "rocm"))]
+pub mod hip_backend;
 mod indexer;
 pub mod layout;
 #[cfg(feature = "metal")]
@@ -119,6 +121,8 @@ pub use cuda_backend as cuda;
 pub use dummy_cuda_backend as cuda;
 
 pub use cuda::{CudaDevice, CudaStorage};
+#[cfg(all(feature = "cuda", feature = "rocm"))]
+pub use hip_backend::{CudaDevice as HipDevice, CudaStorage as HipStorage};
 
 #[cfg(feature = "metal")]
 pub use metal_backend::{MetalDevice, MetalError, MetalStorage};
@@ -132,24 +136,49 @@ extern crate intel_mkl_src;
 #[cfg(feature = "accelerate")]
 extern crate accelerate_src;
 
-// Feature matrix: exactly one GPU backend per binary today.
+// Feature matrix:
 // - default / `--no-default-features`-style CPU builds: no GPU backend,
 //   `GpuArch` exists but `resolve` is not compiled.
 // - `cuda`: NVIDIA only. `rocm`: AMD only.
-// - `cuda` + `rocm`: rejected below until single-process multi-vendor lands
-//   (CUDA+HIP coexistence + per-backend device types; see the fork roadmap).
-#[cfg(all(feature = "cuda", feature = "rocm"))]
+// - `cuda+rocm`: the multi-vendor build - both backends in one binary.
+//   `cuda_backend` is the NVIDIA role (real `cudarc`, `candle-kernels-cuda`
+//   PTX), `hip_backend` is the AMD role (`cudarc-hip`, hipcc-built
+//   `candle-kernels`). NVIDIA driver access is runtime dlopen and must be
+//   gated on `cudarc::driver::sys::is_culib_present()`.
+// - plain `cuda` + `rocm` together is still rejected: opt into `cuda+rocm`
+//   explicitly so the feature set is unambiguous.
+#[cfg(all(feature = "cuda", feature = "rocm", not(feature = "cuda+rocm")))]
 compile_error!(
-    "building with both `cuda` and `rocm` is not supported yet: the GPU backend \
-     compiles once for a single vendor. Track the CUDA+HIP coexistence work in \
-     the fork roadmap (TODO.md, multi-backend runtime) and build one backend \
-     per binary until then."
+    "building with both `cuda` and `rocm` requires the multi-vendor feature: \
+     use `--features cuda+rocm` (both backends in one binary) or build one \
+     backend per binary."
 );
 
-// Under `rocm`, `cudarc-hip` (`cudarc_hip`) re-implements the `cudarc` surface
-// over HIP; alias it so the GPU backend needs no source changes.
-#[cfg(feature = "rocm")]
+// Under plain `rocm`, `cudarc-hip` (`cudarc_hip`) re-implements the `cudarc`
+// surface over HIP; alias it so the single-vendor GPU backend needs no source
+// changes. In a `cuda+rocm` build the name `cudarc` is the real NVIDIA crate
+// and the AMD role binds it per-module instead (see `hip_backend`).
+#[cfg(all(feature = "rocm", not(feature = "cuda")))]
 pub extern crate cudarc_hip as cudarc;
+// Under `cuda` (single or dual) the name `cudarc` is the real NVIDIA crate -
+// needed by the backend bodies and GpuArch resolution.
+#[cfg(feature = "cuda")]
+pub extern crate cudarc;
+
+/// Push zero or more kernel-launch arguments onto a
+/// [`cudarc::driver::LaunchArgs`] builder. Lives at the crate root (not in
+/// the backend body): the body is instantiated once per GPU role in a dual
+/// build, so a body-local definition would export it twice. Downstream
+/// crates (e.g. candle-nn) invoke it as `candle::builder_arg!`.
+#[macro_export]
+macro_rules! builder_arg {
+    ($b:ident, $($arg:expr),*) => {
+        $(
+            let __arg = $arg;
+            $b.arg(&__arg);
+        )*
+    };
+}
 
 pub trait ToUsize2 {
     fn to_usize2(self) -> (usize, usize);

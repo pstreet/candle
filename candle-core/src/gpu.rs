@@ -26,6 +26,39 @@ pub enum GpuArch {
     Vulkan,
 }
 
+// AMD-role arch resolution for dual builds, sharing the rocm branch shape
+// below but bound to the unambiguous `cudarc_hip` paths (the crate-root
+// `cudarc` alias is the real NVIDIA crate there).
+#[cfg(all(feature = "cuda", feature = "rocm"))]
+macro_rules! rocm_resolve_on {
+    ($krate:ident, $stream:expr) => {{
+        let cu_device = $stream.context().cu_device();
+        let cap = |attr| {
+            unsafe { $krate::driver::result::device::get_attribute(cu_device, attr) }
+                .map_err(crate::Error::wrap)
+        };
+        let major = cap(
+            $krate::driver::sys::CUdevice_attribute::CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR,
+        )?;
+        match $stream
+            .context()
+            .gcn_arch_name()
+            .ok()
+            .as_deref()
+            .and_then(GpuArch::parse_gfx_name)
+        {
+            Some(arch) => Ok(arch),
+            // Unparseable name: fall back to the synthetic compute-cap
+            // major as the family so family-level policy still applies;
+            // the step fields stay zeroed (conservative defaults).
+            None if (0..=u8::MAX as i32).contains(&major) => Ok(GpuArch::Rocm {
+                gfx: (major as u8, 0, 0),
+            }),
+            None => crate::bail!("could not resolve AMD gcnArchName"),
+        }
+    }};
+}
+
 #[cfg(any(feature = "cuda", feature = "rocm"))]
 impl GpuArch {
     pub fn resolve(dev: &crate::CudaDevice) -> Result<Self> {
@@ -36,7 +69,7 @@ impl GpuArch {
             |attr| unsafe { result::device::get_attribute(cu_device, attr) }.map_err(Error::wrap);
         let major = cap(sys::CUdevice_attribute::CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR)?;
 
-        #[cfg(feature = "rocm")]
+        #[cfg(all(feature = "rocm", not(feature = "cuda")))]
         {
             match stream
                 .context()
@@ -65,6 +98,13 @@ impl GpuArch {
                 sm: (major as u8, minor as u8),
             })
         }
+    }
+
+    /// Arch resolution for the AMD-role device of a dual build.
+    #[cfg(all(feature = "cuda", feature = "rocm"))]
+    pub fn resolve_hip(dev: &crate::HipDevice) -> Result<Self> {
+        let stream = dev.cuda_stream();
+        rocm_resolve_on!(cudarc_hip, stream)
     }
 }
 
@@ -124,7 +164,7 @@ mod tests {
     }
 }
 
-#[cfg(all(test, feature = "rocm"))]
+#[cfg(all(test, feature = "rocm", not(feature = "cuda")))]
 mod probe_tests {
     use super::GpuArch;
     use crate::backend::BackendDevice;

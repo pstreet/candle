@@ -237,6 +237,26 @@ compile error until single-process multi-vendor lands (see the fork
 roadmap). The HIP-synthetic `cc` ints (gfx1151 -> 1150) survive only as the
 kernel-bridge encoding the llama.cpp-derived launchers expect.
 
+## Multi-vendor builds (`cuda+rocm`)
+
+The opt-in `cuda+rocm` feature compiles both GPU backends into one binary:
+`cuda_backend` is the NVIDIA role (real `cudarc`, PTX from the
+`candle-kernels-cuda` twin crate - the same .cu sources compiled in place
+by cudaforge/nvcc, no duplication), `hip_backend` is the AMD role (the
+shared backend body bound to `cudarc-hip` and the hipcc-built
+`candle-kernels`). Plain `cuda` + `rocm` together is still rejected; opt
+into `cuda+rocm` explicitly. A dual build needs both toolchains
+(hipcc + nvcc); the twin falls back to sm_80 PTX on a GPU-less build box.
+
+One binary, two roles, honestly degraded: the fork's graph-capture,
+hipBLASLt, and managed-upload APIs exist only on `cudarc-hip`, so the
+shared body gates them per role (`gpu_fork_graphs/lt/managed` macros
+defined by the role shells - cfg cannot distinguish roles). The NVIDIA
+role serves GEMMs through the plain path and exposes no graph-capture
+methods until the fork API is ported to NVIDIA; CPU works everywhere, as
+always. The `Device::Hip` enum variant and per-model routing land in the
+next slice - see the fork roadmap.
+
 On the AMD side, `cudarc-hip` offers a `dynamic-loading` feature that
 resolves the HIP runtime through a runtime dlopen (RTLD_LOCAL) instead of
 link-time dependencies, plus an `is_culib_present()` probe - mirroring

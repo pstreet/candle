@@ -17,6 +17,7 @@ exclude = [
     "candle-flash-attn",
     "candle-flash-attn-v3",
     "candle-kernels",
+    "candle-kernels-cuda",
     "candle-metal-kernels",
     "candle-onnx",
 ]

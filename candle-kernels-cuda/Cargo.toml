@@ -1,0 +1,19 @@
+[package]
+name = "candle-kernels-cuda"
+version = "0.11.0"
+edition = "2021"
+
+description = "CUDA kernels for candle's NVIDIA backend in multi-vendor builds"
+repository = "https://github.com/huggingface/candle"
+keywords = ["blas", "tensor", "machine-learning"]
+categories = ["science"]
+license = "MIT OR Apache-2.0"
+
+[lib]
+name = "candle_kernels_cuda"
+
+[features]
+default = []
+
+[build-dependencies]
+cudaforge = "0.1.2"
