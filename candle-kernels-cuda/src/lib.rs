@@ -90,3 +90,11 @@ mdl!(REDUCE, Reduce);
 mdl!(SORT, Sort);
 mdl!(TERNARY, Ternary);
 mdl!(UNARY, Unary);
+
+// FFI declarations shared with candle-kernels (single source of truth via
+// #[path], no symlink needed). Declarations only: link-inert unless
+// referenced. The dual build never links the twin's static archive (it is
+// not built), so any reference to these symbols on the NVIDIA role fails
+// loudly at link time instead of silently misbehaving.
+#[path = "../../candle-kernels/src/ffi.rs"]
+pub mod ffi;

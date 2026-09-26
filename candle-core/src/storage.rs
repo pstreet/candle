@@ -44,6 +44,20 @@ impl Storage {
         }
     }
 
+    /// The serving role's storage: the `Cuda` variant in single-vendor
+    /// builds, the `Hip` variant in dual builds (all downstream C kernels
+    /// are hipcc-built).
+    #[cfg(any(feature = "cuda", feature = "rocm"))]
+    pub fn as_role_storage(&self) -> Result<&crate::role::RoleStorage> {
+        match self {
+            #[cfg(not(all(feature = "cuda", feature = "rocm")))]
+            Self::Cuda(s) => Ok(s),
+            #[cfg(all(feature = "cuda", feature = "rocm"))]
+            Self::Hip(s) => Ok(s),
+            _ => crate::bail!("expected the serving role's storage"),
+        }
+    }
+
     pub fn device(&self) -> Device {
         match self {
             Self::Cpu(_) => Device::Cpu,

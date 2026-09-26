@@ -286,6 +286,17 @@ impl Device {
         Ok(Self::Hip(crate::HipDevice::new_with_stream(ordinal)?))
     }
 
+    /// The serving role's device wrapper: the `Cuda` variant in
+    /// single-vendor builds, the `Hip` variant in dual builds (all
+    /// downstream C kernels are hipcc-built).
+    #[cfg(any(feature = "cuda", feature = "rocm"))]
+    pub fn as_role_device(&self) -> Result<&crate::role::RoleDevice> {
+        #[cfg(not(all(feature = "cuda", feature = "rocm")))]
+        return self.as_cuda_device();
+        #[cfg(all(feature = "cuda", feature = "rocm"))]
+        return self.as_hip_device();
+    }
+
     #[cfg(all(feature = "cuda", feature = "rocm"))]
     pub fn as_hip_device(&self) -> Result<&crate::HipDevice> {
         match self {

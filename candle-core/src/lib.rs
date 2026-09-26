@@ -68,6 +68,8 @@ pub mod error;
 pub mod gpu;
 #[cfg(all(feature = "cuda", feature = "rocm"))]
 pub mod hip_backend;
+#[cfg(any(feature = "cuda", feature = "rocm"))]
+pub mod role;
 mod indexer;
 pub mod layout;
 #[cfg(feature = "metal")]
