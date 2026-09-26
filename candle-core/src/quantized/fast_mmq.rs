@@ -49,19 +49,18 @@ fn qk_for(dtype: GgmlDType) -> usize {
 
 // Mirrors ggml_cuda_should_use_mmq for the AMD RDNA (WMMA) family: at large batch,
 // dequantize + BLAS beats MMQ for some quant types. Other archs keep MMQ for all batches.
-fn should_use_mmq(dtype: GgmlDType, cc: i32, batch: usize) -> bool {
-    let major = cc / 100;
-    if major != 11 && major != 12 {
-        return true;
-    }
-    if major == 12 {
-        return true;
-    }
-    match dtype {
-        GgmlDType::Q2K => batch <= 128,
-        GgmlDType::Q6K => batch <= 256,
-        _ => true,
-    }
+// This copy of the MMQ kernels returns garbage for every accepted dtype -
+// verified against a dequantized f32 reference on gfx1151 (mistralrs-quant
+// tests::mmq_dtype_bench, 2026-09-25: max_abs_diff up to f32 max for
+// Q2K/Q3K/Q4K/Q5K/Q6K/Q8_0 while the mistral.rs-maintained kernel copy is
+// exact on identical inputs). The copy diverged from the maintained one and
+// no other architecture has been validated since, so it stays disabled
+// everywhere rather than shipping wrong results on unproven hardware.
+// Candle-side callers get the dequantize GEMM instead (~28 TFLOPS at 4096
+// rows on gfx1151). Re-enable arch by arch after resyncing the kernels and
+// re-running the bench.
+fn should_use_mmq(_dtype: GgmlDType, _cc: i32, _batch: usize) -> bool {
+    false
 }
 
 // ds_layout mapping: which Q8_1_mmq scale layout to use per weight type.
