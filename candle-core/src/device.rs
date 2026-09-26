@@ -7,16 +7,31 @@ use crate::{CpuStorage, DType, Result, Shape, Storage, WithDType};
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub enum DeviceLocation {
     Cpu,
-    Cuda { gpu_id: usize },
-    Metal { gpu_id: usize },
+    Cuda {
+        gpu_id: usize,
+    },
+    Metal {
+        gpu_id: usize,
+    },
+    /// AMD device in a dual cuda+rocm build. The per-API index mirrors
+    /// `Cuda { gpu_id }`; `hip:0` and `cuda:0` may address the same card.
+    #[cfg(all(feature = "cuda", feature = "rocm"))]
+    Hip {
+        gpu_id: usize,
+    },
 }
 
-/// Cpu, Cuda, or Metal
+/// Cpu, Cuda, Metal, and - in dual cuda+rocm builds - Hip (the AMD role)
 #[derive(Debug, Clone)]
 pub enum Device {
     Cpu,
     Cuda(crate::CudaDevice),
     Metal(crate::MetalDevice),
+    /// AMD-role device of a dual build. One model pins one backend; a Hip
+    /// device never shares kernels or streams with a Cuda device, even on
+    /// the same physical card.
+    #[cfg(all(feature = "cuda", feature = "rocm"))]
+    Hip(crate::HipDevice),
 }
 
 pub trait NdArray {
@@ -240,6 +255,8 @@ impl Device {
             Self::Cuda(d) => Ok(d),
             Self::Cpu => crate::bail!("expected a cuda device, got cpu"),
             Self::Metal(_) => crate::bail!("expected a cuda device, got Metal"),
+            #[cfg(all(feature = "cuda", feature = "rocm"))]
+            Self::Hip(_) => crate::bail!("expected a cuda device, got hip"),
         }
     }
 
@@ -248,11 +265,35 @@ impl Device {
             Self::Cuda(_) => crate::bail!("expected a metal device, got cuda"),
             Self::Cpu => crate::bail!("expected a metal device, got cpu"),
             Self::Metal(d) => Ok(d),
+            #[cfg(all(feature = "cuda", feature = "rocm"))]
+            Self::Hip(_) => crate::bail!("expected a metal device, got hip"),
         }
     }
 
     pub fn new_cuda_with_stream(ordinal: usize) -> Result<Self> {
         Ok(Self::Cuda(crate::CudaDevice::new_with_stream(ordinal)?))
+    }
+
+    /// AMD-role device of a dual build (`hip:<ordinal>` in S3 routing).
+    #[cfg(all(feature = "cuda", feature = "rocm"))]
+    pub fn new_hip(ordinal: usize) -> Result<Self> {
+        Ok(Self::Hip(crate::HipDevice::new(ordinal)?))
+    }
+
+    /// AMD-role device of a dual build, with its own stream.
+    #[cfg(all(feature = "cuda", feature = "rocm"))]
+    pub fn new_hip_with_stream(ordinal: usize) -> Result<Self> {
+        Ok(Self::Hip(crate::HipDevice::new_with_stream(ordinal)?))
+    }
+
+    #[cfg(all(feature = "cuda", feature = "rocm"))]
+    pub fn as_hip_device(&self) -> Result<&crate::HipDevice> {
+        match self {
+            Self::Hip(d) => Ok(d),
+            Self::Cpu => crate::bail!("expected a hip device, got cpu"),
+            Self::Cuda(_) => crate::bail!("expected a hip device, got cuda"),
+            Self::Metal(_) => crate::bail!("expected a hip device, got Metal"),
+        }
     }
 
     pub fn new_metal(ordinal: usize) -> Result<Self> {
@@ -280,6 +321,8 @@ impl Device {
             Self::Cpu => CpuDevice.set_seed(seed),
             Self::Cuda(c) => c.set_seed(seed),
             Self::Metal(m) => m.set_seed(seed),
+            #[cfg(all(feature = "cuda", feature = "rocm"))]
+            Self::Hip(h) => h.set_seed(seed),
         }
     }
 
@@ -288,6 +331,8 @@ impl Device {
             Self::Cpu => CpuDevice.get_current_seed(),
             Self::Cuda(c) => c.get_current_seed(),
             Self::Metal(m) => m.get_current_seed(),
+            #[cfg(all(feature = "cuda", feature = "rocm"))]
+            Self::Hip(h) => h.get_current_seed(),
         }
     }
 
@@ -296,6 +341,8 @@ impl Device {
             (Self::Cpu, Self::Cpu) => true,
             (Self::Cuda(lhs), Self::Cuda(rhs)) => lhs.same_device(rhs),
             (Self::Metal(lhs), Self::Metal(rhs)) => lhs.same_device(rhs),
+            #[cfg(all(feature = "cuda", feature = "rocm"))]
+            (Self::Hip(lhs), Self::Hip(rhs)) => lhs.same_device(rhs),
             _ => false,
         }
     }
@@ -305,6 +352,8 @@ impl Device {
             Self::Cpu => DeviceLocation::Cpu,
             Self::Cuda(device) => device.location(),
             Device::Metal(device) => device.location(),
+            #[cfg(all(feature = "cuda", feature = "rocm"))]
+            Self::Hip(device) => device.location(),
         }
     }
 
@@ -320,9 +369,16 @@ impl Device {
         matches!(self, Self::Metal(_))
     }
 
+    #[cfg(all(feature = "cuda", feature = "rocm"))]
+    pub fn is_hip(&self) -> bool {
+        matches!(self, Self::Hip(_))
+    }
+
     pub fn supports_bf16(&self) -> bool {
         match self {
             Self::Cuda(_) | Self::Metal(_) => true,
+            #[cfg(all(feature = "cuda", feature = "rocm"))]
+            Self::Hip(_) => true,
             Self::Cpu => false,
         }
     }
@@ -374,6 +430,17 @@ impl Device {
                     Ok(Storage::Cuda(storage))
                 }
             }
+            #[cfg(all(feature = "cuda", feature = "rocm"))]
+            Device::Hip(device) => {
+                // TODO: Remove the special case if we start supporting generating f16/bf16 directly.
+                if dtype == DType::F16 || dtype == DType::BF16 {
+                    let storage = device.rand_uniform(shape, DType::F32, lo, up)?;
+                    Storage::Hip(storage).to_dtype(&crate::Layout::contiguous(shape), dtype)
+                } else {
+                    let storage = device.rand_uniform(shape, dtype, lo, up)?;
+                    Ok(Storage::Hip(storage))
+                }
+            }
             Device::Metal(device) => {
                 let storage = device.rand_uniform(shape, dtype, lo, up)?;
                 Ok(Storage::Metal(storage))
@@ -412,6 +479,17 @@ impl Device {
                     Ok(Storage::Cuda(storage))
                 }
             }
+            #[cfg(all(feature = "cuda", feature = "rocm"))]
+            Device::Hip(device) => {
+                // TODO: Remove the special case if we start supporting generating f16/bf16 directly.
+                if dtype == DType::F16 || dtype == DType::BF16 {
+                    let storage = device.rand_normal(shape, DType::F32, mean, std)?;
+                    Storage::Hip(storage).to_dtype(&crate::Layout::contiguous(shape), dtype)
+                } else {
+                    let storage = device.rand_normal(shape, dtype, mean, std)?;
+                    Ok(Storage::Hip(storage))
+                }
+            }
             Device::Metal(device) => {
                 let storage = device.rand_normal(shape, dtype, mean, std)?;
                 Ok(Storage::Metal(storage))
@@ -438,6 +516,11 @@ impl Device {
                 let storage = device.zeros_impl(shape, dtype)?;
                 Ok(Storage::Cuda(storage))
             }
+            #[cfg(all(feature = "cuda", feature = "rocm"))]
+            Device::Hip(device) => {
+                let storage = device.zeros_impl(shape, dtype)?;
+                Ok(Storage::Hip(storage))
+            }
             Device::Metal(device) => {
                 let storage = device.zeros_impl(shape, dtype)?;
                 Ok(Storage::Metal(storage))
@@ -455,6 +538,11 @@ impl Device {
                 let storage = device.alloc_uninit(shape, dtype)?;
                 Ok(Storage::Cuda(storage))
             }
+            #[cfg(all(feature = "cuda", feature = "rocm"))]
+            Device::Hip(device) => {
+                let storage = device.alloc_uninit(shape, dtype)?;
+                Ok(Storage::Hip(storage))
+            }
             Device::Metal(device) => {
                 let storage = device.alloc_uninit(shape, dtype)?;
                 Ok(Storage::Metal(storage))
@@ -468,6 +556,11 @@ impl Device {
             Device::Cuda(device) => {
                 let storage = device.storage_from_slice(data)?;
                 Ok(Storage::Cuda(storage))
+            }
+            #[cfg(all(feature = "cuda", feature = "rocm"))]
+            Device::Hip(device) => {
+                let storage = device.storage_from_slice(data)?;
+                Ok(Storage::Hip(storage))
             }
             Device::Metal(device) => {
                 let storage = device.storage_from_slice(data)?;
@@ -483,6 +576,12 @@ impl Device {
                 let storage = array.to_cpu_storage();
                 let storage = device.storage_from_cpu_storage_owned(storage)?;
                 Ok(Storage::Cuda(storage))
+            }
+            #[cfg(all(feature = "cuda", feature = "rocm"))]
+            Device::Hip(device) => {
+                let storage = array.to_cpu_storage();
+                let storage = device.storage_from_cpu_storage_owned(storage)?;
+                Ok(Storage::Hip(storage))
             }
             Device::Metal(device) => {
                 let storage = array.to_cpu_storage();
@@ -500,6 +599,12 @@ impl Device {
                 let storage = device.storage_from_cpu_storage_owned(storage)?;
                 Ok(Storage::Cuda(storage))
             }
+            #[cfg(all(feature = "cuda", feature = "rocm"))]
+            Device::Hip(device) => {
+                let storage = S::to_cpu_storage_owned(data);
+                let storage = device.storage_from_cpu_storage_owned(storage)?;
+                Ok(Storage::Hip(storage))
+            }
             Device::Metal(device) => {
                 let storage = S::to_cpu_storage_owned(data);
                 let storage = device.storage_from_cpu_storage_owned(storage)?;
@@ -513,6 +618,8 @@ impl Device {
             Self::Cpu => Ok(()),
             Self::Cuda(d) => d.synchronize(),
             Self::Metal(d) => d.synchronize(),
+            #[cfg(all(feature = "cuda", feature = "rocm"))]
+            Self::Hip(d) => d.synchronize(),
         }
     }
 }

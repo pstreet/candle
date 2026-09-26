@@ -34,6 +34,14 @@ macro_rules! gpu_fork_managed {
     };
 }
 
+/// AMD role: devices report the `Hip` location variant (per-API index, so
+/// `hip:0` and `cuda:0` may address the same card).
+macro_rules! gpu_backend_location {
+    ($id:expr) => {
+        crate::DeviceLocation::Hip { gpu_id: $id }
+    };
+}
+
 include!("../cuda_backend/body/mod.rs");
 
 /// Dual-build (`cuda+rocm`) tests: the AMD role must work end-to-end (arch
@@ -65,6 +73,31 @@ mod dual_backend_tests {
         let c = (&a + &b).unwrap();
         let v: Vec<Vec<f32>> = c.to_vec2().unwrap();
         assert_eq!(v, vec![vec![6., 8.], vec![10., 12.]]);
+    }
+
+    #[test]
+    fn hip_device_enum_dispatch() {
+        // Tensor-level proof of the Device::Hip / Storage::Hip dispatch
+        // layer: zeros + add on hip, dtoh via to_vec, hip->cpu transfer,
+        // and location reporting the Hip variant.
+        use crate::DType;
+        let dev = Device::new_hip(0).expect("hip:0");
+        assert!(dev.is_hip());
+        assert!(!dev.is_cuda());
+        assert!(matches!(
+            dev.location(),
+            crate::DeviceLocation::Hip { gpu_id: 0 }
+        ));
+        let a = Tensor::zeros((2, 2), DType::F32, &dev).unwrap();
+        let b = Tensor::ones((2, 2), DType::F32, &dev).unwrap();
+        let c = (&a + &b).unwrap();
+        assert!(c.device().is_hip());
+        let v: Vec<Vec<f32>> = c.to_vec2().unwrap();
+        assert_eq!(v, vec![vec![1., 1.], vec![1., 1.]]);
+        let back = c.to_device(&Device::Cpu).unwrap();
+        assert!(back.device().is_cpu());
+        let v: Vec<Vec<f32>> = back.to_vec2().unwrap();
+        assert_eq!(v, vec![vec![1., 1.], vec![1., 1.]]);
     }
 
     #[test]

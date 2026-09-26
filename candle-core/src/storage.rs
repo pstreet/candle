@@ -2,6 +2,8 @@ use crate::backend::BackendStorage;
 use crate::custom_op::{all_distinct, InplaceOpN, Src};
 use crate::op::{self, CmpOp, ReduceOp};
 use crate::scalar::Scalar;
+#[cfg(all(feature = "cuda", feature = "rocm"))]
+use crate::HipStorage;
 use crate::{CpuStorage, CudaStorage, DType, Device, Error, Layout, MetalStorage, Result, Shape};
 use crate::{CustomOp1, CustomOp2, CustomOp3};
 use parking_lot::{RwLockReadGuard, RwLockWriteGuard};
@@ -13,6 +15,10 @@ pub enum Storage {
     Cpu(CpuStorage),
     Cuda(CudaStorage),
     Metal(MetalStorage),
+    /// AMD-role storage of a dual build. Never mixed with `Cuda` storage in
+    /// one op: no cross-vendor peer copies exist, only host bounces.
+    #[cfg(all(feature = "cuda", feature = "rocm"))]
+    Hip(crate::HipStorage),
 }
 
 pub type StorageRef<'a> = RwLockReadGuard<'a, Storage>;
@@ -26,6 +32,11 @@ impl Storage {
                 let storage = storage.try_clone(layout)?;
                 Ok(Self::Cuda(storage))
             }
+            #[cfg(all(feature = "cuda", feature = "rocm"))]
+            Self::Hip(storage) => {
+                let storage = storage.try_clone(layout)?;
+                Ok(Self::Hip(storage))
+            }
             Self::Metal(storage) => {
                 let storage = storage.try_clone(layout)?;
                 Ok(Self::Metal(storage))
@@ -37,6 +48,8 @@ impl Storage {
         match self {
             Self::Cpu(_) => Device::Cpu,
             Self::Cuda(storage) => Device::Cuda(storage.device().clone()),
+            #[cfg(all(feature = "cuda", feature = "rocm"))]
+            Self::Hip(storage) => Device::Hip(storage.device().clone()),
             Self::Metal(storage) => Device::Metal(storage.device().clone()),
         }
     }
@@ -45,6 +58,8 @@ impl Storage {
         match self {
             Self::Cpu(storage) => storage.dtype(),
             Self::Cuda(storage) => storage.dtype(),
+            #[cfg(all(feature = "cuda", feature = "rocm"))]
+            Self::Hip(storage) => storage.dtype(),
             Self::Metal(storage) => storage.dtype(),
         }
     }
@@ -83,6 +98,8 @@ impl Storage {
         match self {
             Storage::Cpu(storage) => storage.const_set(v, l),
             Storage::Cuda(storage) => storage.const_set(v, l),
+            #[cfg(all(feature = "cuda", feature = "rocm"))]
+            Storage::Hip(storage) => storage.const_set(v, l),
             Storage::Metal(storage) => storage.const_set(v, l),
         }
     }
@@ -96,6 +113,11 @@ impl Storage {
             Self::Cuda(storage) => {
                 let storage = storage.affine(layout, mul, add)?;
                 Ok(Self::Cuda(storage))
+            }
+            #[cfg(all(feature = "cuda", feature = "rocm"))]
+            Self::Hip(storage) => {
+                let storage = storage.affine(layout, mul, add)?;
+                Ok(Self::Hip(storage))
             }
             Self::Metal(storage) => {
                 let storage = storage.affine(layout, mul, add)?;
@@ -114,6 +136,11 @@ impl Storage {
                 let storage = storage.powf(layout, alpha)?;
                 Ok(Self::Cuda(storage))
             }
+            #[cfg(all(feature = "cuda", feature = "rocm"))]
+            Self::Hip(storage) => {
+                let storage = storage.powf(layout, alpha)?;
+                Ok(Self::Hip(storage))
+            }
             Self::Metal(storage) => {
                 let storage = storage.powf(layout, alpha)?;
                 Ok(Self::Metal(storage))
@@ -130,6 +157,11 @@ impl Storage {
             Self::Cuda(storage) => {
                 let storage = storage.elu(layout, alpha)?;
                 Ok(Self::Cuda(storage))
+            }
+            #[cfg(all(feature = "cuda", feature = "rocm"))]
+            Self::Hip(storage) => {
+                let storage = storage.elu(layout, alpha)?;
+                Ok(Self::Hip(storage))
             }
             Self::Metal(storage) => {
                 let storage = storage.elu(layout, alpha)?;
@@ -155,6 +187,11 @@ impl Storage {
             (Self::Cuda(lhs), Self::Cuda(rhs)) => {
                 let storage = lhs.cmp(op, rhs, lhs_layout, rhs_layout)?;
                 Ok(Self::Cuda(storage))
+            }
+            #[cfg(all(feature = "cuda", feature = "rocm"))]
+            (Self::Hip(lhs), Self::Hip(rhs)) => {
+                let storage = lhs.cmp(op, rhs, lhs_layout, rhs_layout)?;
+                Ok(Self::Hip(storage))
             }
             (Self::Metal(lhs), Self::Metal(rhs)) => {
                 let storage = lhs.cmp(op, rhs, lhs_layout, rhs_layout)?;
@@ -183,6 +220,11 @@ impl Storage {
                 let storage = storage.reduce_op(op, layout, s)?;
                 Ok(Self::Cuda(storage))
             }
+            #[cfg(all(feature = "cuda", feature = "rocm"))]
+            Self::Hip(storage) => {
+                let storage = storage.reduce_op(op, layout, s)?;
+                Ok(Self::Hip(storage))
+            }
             Self::Metal(storage) => {
                 let storage = storage.reduce_op(op, layout, s)?;
                 Ok(Self::Metal(storage))
@@ -200,6 +242,11 @@ impl Storage {
                 let storage = storage.to_dtype(layout, dtype)?;
                 Ok(Self::Cuda(storage))
             }
+            #[cfg(all(feature = "cuda", feature = "rocm"))]
+            Self::Hip(storage) => {
+                let storage = storage.to_dtype(layout, dtype)?;
+                Ok(Self::Hip(storage))
+            }
             Self::Metal(storage) => {
                 let storage = storage.to_dtype(layout, dtype)?;
                 Ok(Self::Metal(storage))
@@ -216,6 +263,11 @@ impl Storage {
             Self::Cuda(storage) => {
                 let (storage, shape) = c.cuda_fwd(storage, l)?;
                 Ok((Self::Cuda(storage), shape))
+            }
+            #[cfg(all(feature = "cuda", feature = "rocm"))]
+            Self::Hip(storage) => {
+                let (storage, shape) = c.hip_fwd(storage, l)?;
+                Ok((Self::Hip(storage), shape))
             }
             Self::Metal(storage) => {
                 let (storage, shape) = c.metal_fwd(storage, l)?;
@@ -240,6 +292,11 @@ impl Storage {
             (Self::Cuda(s1), Self::Cuda(s2)) => {
                 let (s, shape) = c.cuda_fwd(s1, l1, s2, l2)?;
                 Ok((Self::Cuda(s), shape))
+            }
+            #[cfg(all(feature = "cuda", feature = "rocm"))]
+            (Self::Hip(s1), Self::Hip(s2)) => {
+                let (s, shape) = c.hip_fwd(s1, l1, s2, l2)?;
+                Ok((Self::Hip(s), shape))
             }
             (Self::Metal(s1), Self::Metal(s2)) => {
                 let (s, shape) = c.metal_fwd(s1, l1, s2, l2)?;
@@ -268,6 +325,11 @@ impl Storage {
             (Self::Cuda(s1), Self::Cuda(s2), Self::Cuda(s3)) => {
                 let (s, shape) = c.cuda_fwd(s1, l1, s2, l2, s3, l3)?;
                 Ok((Self::Cuda(s), shape))
+            }
+            #[cfg(all(feature = "cuda", feature = "rocm"))]
+            (Self::Hip(s1), Self::Hip(s2), Self::Hip(s3)) => {
+                let (s, shape) = c.hip_fwd(s1, l1, s2, l2, s3, l3)?;
+                Ok((Self::Hip(s), shape))
             }
             (Self::Metal(s1), Self::Metal(s2), Self::Metal(s3)) => {
                 let (s, shape) = c.metal_fwd(s1, l1, s2, l2, s3, l3)?;
@@ -319,6 +381,8 @@ impl Storage {
         match self {
             Storage::Cpu(dst) => inplace_dispatch!(dst, Cpu, cpu_fwd, cpu_fwd_aliased),
             Storage::Cuda(dst) => inplace_dispatch!(dst, Cuda, cuda_fwd, cuda_fwd_aliased),
+            #[cfg(all(feature = "cuda", feature = "rocm"))]
+            Storage::Hip(dst) => inplace_dispatch!(dst, Hip, hip_fwd, hip_fwd_aliased),
             Storage::Metal(dst) => inplace_dispatch!(dst, Metal, metal_fwd, metal_fwd_aliased),
         }
     }
@@ -332,6 +396,11 @@ impl Storage {
             Self::Cuda(storage) => {
                 let storage = storage.unary_impl::<B>(layout)?;
                 Ok(Self::Cuda(storage))
+            }
+            #[cfg(all(feature = "cuda", feature = "rocm"))]
+            Self::Hip(storage) => {
+                let storage = storage.unary_impl::<B>(layout)?;
+                Ok(Self::Hip(storage))
             }
             Self::Metal(storage) => {
                 let storage = storage.unary_impl::<B>(layout)?;
@@ -356,6 +425,11 @@ impl Storage {
             (Self::Cuda(lhs), Self::Cuda(rhs)) => {
                 let storage = lhs.binary_impl::<B>(rhs, lhs_layout, rhs_layout)?;
                 Ok(Self::Cuda(storage))
+            }
+            #[cfg(all(feature = "cuda", feature = "rocm"))]
+            (Self::Hip(lhs), Self::Hip(rhs)) => {
+                let storage = lhs.binary_impl::<B>(rhs, lhs_layout, rhs_layout)?;
+                Ok(Self::Hip(storage))
             }
             (Self::Metal(lhs), Self::Metal(rhs)) => {
                 let storage = lhs.binary_impl::<B>(rhs, lhs_layout, rhs_layout)?;
@@ -392,6 +466,11 @@ impl Storage {
                 let s = inp.conv1d(l, kernel, kernel_l, params)?;
                 Ok(Self::Cuda(s))
             }
+            #[cfg(all(feature = "cuda", feature = "rocm"))]
+            (Storage::Hip(inp), Storage::Hip(kernel)) => {
+                let s = inp.conv1d(l, kernel, kernel_l, params)?;
+                Ok(Self::Hip(s))
+            }
             (Storage::Metal(inp), Storage::Metal(kernel)) => {
                 let s = inp.conv1d(l, kernel, kernel_l, params)?;
                 Ok(Self::Metal(s))
@@ -422,6 +501,11 @@ impl Storage {
             (Storage::Cuda(inp), Storage::Cuda(kernel)) => {
                 let s = inp.conv_transpose1d(l, kernel, kernel_l, params)?;
                 Ok(Self::Cuda(s))
+            }
+            #[cfg(all(feature = "cuda", feature = "rocm"))]
+            (Storage::Hip(inp), Storage::Hip(kernel)) => {
+                let s = inp.conv_transpose1d(l, kernel, kernel_l, params)?;
+                Ok(Self::Hip(s))
             }
             (Storage::Metal(inp), Storage::Metal(kernel)) => {
                 let s = inp.conv_transpose1d(l, kernel, kernel_l, params)?;
@@ -454,6 +538,11 @@ impl Storage {
                 let s = inp.conv2d(l, kernel, kernel_l, params)?;
                 Ok(Self::Cuda(s))
             }
+            #[cfg(all(feature = "cuda", feature = "rocm"))]
+            (Storage::Hip(inp), Storage::Hip(kernel)) => {
+                let s = inp.conv2d(l, kernel, kernel_l, params)?;
+                Ok(Self::Hip(s))
+            }
             (Storage::Metal(inp), Storage::Metal(kernel)) => {
                 let s = inp.conv2d(l, kernel, kernel_l, params)?;
                 Ok(Self::Metal(s))
@@ -485,6 +574,11 @@ impl Storage {
                 let s = inp.conv_transpose2d(l, kernel, kernel_l, params)?;
                 Ok(Self::Cuda(s))
             }
+            #[cfg(all(feature = "cuda", feature = "rocm"))]
+            (Storage::Hip(inp), Storage::Hip(kernel)) => {
+                let s = inp.conv_transpose2d(l, kernel, kernel_l, params)?;
+                Ok(Self::Hip(s))
+            }
             (Storage::Metal(inp), Storage::Metal(kernel)) => {
                 let s = inp.conv_transpose2d(l, kernel, kernel_l, params)?;
                 Ok(Self::Metal(s))
@@ -513,6 +607,11 @@ impl Storage {
                 let storage = storage.avg_pool2d(layout, kernel_size, stride)?;
                 Ok(Self::Cuda(storage))
             }
+            #[cfg(all(feature = "cuda", feature = "rocm"))]
+            Self::Hip(storage) => {
+                let storage = storage.avg_pool2d(layout, kernel_size, stride)?;
+                Ok(Self::Hip(storage))
+            }
             Self::Metal(storage) => {
                 let storage = storage.avg_pool2d(layout, kernel_size, stride)?;
                 Ok(Self::Metal(storage))
@@ -535,6 +634,11 @@ impl Storage {
                 let storage = storage.max_pool2d(layout, kernel_size, stride)?;
                 Ok(Self::Cuda(storage))
             }
+            #[cfg(all(feature = "cuda", feature = "rocm"))]
+            Self::Hip(storage) => {
+                let storage = storage.max_pool2d(layout, kernel_size, stride)?;
+                Ok(Self::Hip(storage))
+            }
             Self::Metal(storage) => {
                 let storage = storage.max_pool2d(layout, kernel_size, stride)?;
                 Ok(Self::Metal(storage))
@@ -552,6 +656,11 @@ impl Storage {
                 let storage = storage.upsample_nearest1d(layout, sz)?;
                 Ok(Self::Cuda(storage))
             }
+            #[cfg(all(feature = "cuda", feature = "rocm"))]
+            Self::Hip(storage) => {
+                let storage = storage.upsample_nearest1d(layout, sz)?;
+                Ok(Self::Hip(storage))
+            }
             Self::Metal(storage) => {
                 let storage = storage.upsample_nearest1d(layout, sz)?;
                 Ok(Self::Metal(storage))
@@ -568,6 +677,11 @@ impl Storage {
             Self::Cuda(storage) => {
                 let storage = storage.upsample_nearest2d(layout, h, w)?;
                 Ok(Self::Cuda(storage))
+            }
+            #[cfg(all(feature = "cuda", feature = "rocm"))]
+            Self::Hip(storage) => {
+                let storage = storage.upsample_nearest2d(layout, h, w)?;
+                Ok(Self::Hip(storage))
             }
             Self::Metal(storage) => {
                 let storage = storage.upsample_nearest2d(layout, h, w)?;
@@ -596,6 +710,12 @@ impl Storage {
                     storage.upsample_bilinear2d(layout, h, w, align_corners, scale_h, scale_w)?;
                 Ok(Self::Cuda(storage))
             }
+            #[cfg(all(feature = "cuda", feature = "rocm"))]
+            Self::Hip(storage) => {
+                let storage =
+                    storage.upsample_bilinear2d(layout, h, w, align_corners, scale_h, scale_w)?;
+                Ok(Self::Hip(storage))
+            }
             Self::Metal(storage) => {
                 let storage =
                     storage.upsample_bilinear2d(layout, h, w, align_corners, scale_h, scale_w)?;
@@ -623,6 +743,11 @@ impl Storage {
             (Self::Cuda(cond), Self::Cuda(t), Self::Cuda(f)) => {
                 let storage = cond.where_cond(layout, t, layout_t, f, layout_f)?;
                 Ok(Self::Cuda(storage))
+            }
+            #[cfg(all(feature = "cuda", feature = "rocm"))]
+            (Self::Hip(cond), Self::Hip(t), Self::Hip(f)) => {
+                let storage = cond.where_cond(layout, t, layout_t, f, layout_f)?;
+                Ok(Self::Hip(storage))
             }
             (Self::Metal(cond), Self::Metal(t), Self::Metal(f)) => {
                 let storage = cond.where_cond(layout, t, layout_t, f, layout_f)?;
@@ -654,6 +779,11 @@ impl Storage {
                 let storage = s.gather(l, indexes, indexes_l, d)?;
                 Ok(Self::Cuda(storage))
             }
+            #[cfg(all(feature = "cuda", feature = "rocm"))]
+            (Self::Hip(s), Self::Hip(indexes)) => {
+                let storage = s.gather(l, indexes, indexes_l, d)?;
+                Ok(Self::Hip(storage))
+            }
             (Self::Metal(s), Self::Metal(indexes)) => {
                 let storage = s.gather(l, indexes, indexes_l, d)?;
                 Ok(Self::Metal(storage))
@@ -680,6 +810,10 @@ impl Storage {
             (Self::Cuda(s), Self::Cuda(indexes), Self::Cuda(source)) => {
                 s.scatter_set(l, indexes, indexes_l, source, source_l, d)?;
             }
+            #[cfg(all(feature = "cuda", feature = "rocm"))]
+            (Self::Hip(s), Self::Hip(indexes), Self::Hip(source)) => {
+                s.scatter_set(l, indexes, indexes_l, source, source_l, d)?;
+            }
             (Self::Metal(s), Self::Metal(indexes), Self::Metal(source)) => {
                 s.scatter_set(l, indexes, indexes_l, source, source_l, d)?;
             }
@@ -704,6 +838,10 @@ impl Storage {
                 s.scatter_add_set(l, indexes, indexes_l, source, source_l, d)?;
             }
             (Self::Cuda(s), Self::Cuda(indexes), Self::Cuda(source)) => {
+                s.scatter_add_set(l, indexes, indexes_l, source, source_l, d)?;
+            }
+            #[cfg(all(feature = "cuda", feature = "rocm"))]
+            (Self::Hip(s), Self::Hip(indexes), Self::Hip(source)) => {
                 s.scatter_add_set(l, indexes, indexes_l, source, source_l, d)?;
             }
             (Self::Metal(s), Self::Metal(indexes), Self::Metal(source)) => {
@@ -734,6 +872,11 @@ impl Storage {
                 let storage = s.index_add(l, indexes, indexes_l, source, source_l, d)?;
                 Ok(Self::Cuda(storage))
             }
+            #[cfg(all(feature = "cuda", feature = "rocm"))]
+            (Self::Hip(s), Self::Hip(indexes), Self::Hip(source)) => {
+                let storage = s.index_add(l, indexes, indexes_l, source, source_l, d)?;
+                Ok(Self::Hip(storage))
+            }
             (Self::Metal(s), Self::Metal(indexes), Self::Metal(source)) => {
                 let storage = s.index_add(l, indexes, indexes_l, source, source_l, d)?;
                 Ok(Self::Metal(storage))
@@ -758,6 +901,11 @@ impl Storage {
             (Self::Cuda(lhs), Self::Cuda(rhs)) => {
                 let storage = lhs.index_select(rhs, lhs_l, rhs_l, d)?;
                 Ok(Self::Cuda(storage))
+            }
+            #[cfg(all(feature = "cuda", feature = "rocm"))]
+            (Self::Hip(lhs), Self::Hip(rhs)) => {
+                let storage = lhs.index_select(rhs, lhs_l, rhs_l, d)?;
+                Ok(Self::Hip(storage))
             }
             (Self::Metal(lhs), Self::Metal(rhs)) => {
                 let storage = lhs.index_select(rhs, lhs_l, rhs_l, d)?;
@@ -789,6 +937,11 @@ impl Storage {
             (Self::Cuda(lhs), Self::Cuda(rhs)) => {
                 let storage = lhs.matmul(rhs, bmnk, lhs_layout, rhs_layout)?;
                 Ok(Self::Cuda(storage))
+            }
+            #[cfg(all(feature = "cuda", feature = "rocm"))]
+            (Self::Hip(lhs), Self::Hip(rhs)) => {
+                let storage = lhs.matmul(rhs, bmnk, lhs_layout, rhs_layout)?;
+                Ok(Self::Hip(storage))
             }
             (Self::Metal(lhs), Self::Metal(rhs)) => {
                 let storage = lhs.matmul(rhs, bmnk, lhs_layout, rhs_layout)?;
@@ -839,6 +992,10 @@ impl Storage {
         match (self, dst) {
             (Self::Cpu(src), Self::Cpu(dst)) => src.copy2d(dst, d1, d2, src_s, dst_s, src_o, dst_o),
             (Self::Cuda(src), Self::Cuda(dst)) => {
+                Ok(src.copy2d(dst, d1, d2, src_s, dst_s, src_o, dst_o)?)
+            }
+            #[cfg(all(feature = "cuda", feature = "rocm"))]
+            (Self::Hip(src), Self::Hip(dst)) => {
                 Ok(src.copy2d(dst, d1, d2, src_s, dst_s, src_o, dst_o)?)
             }
             (Self::Metal(src), Self::Metal(dst)) => {

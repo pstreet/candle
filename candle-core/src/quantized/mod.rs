@@ -84,6 +84,11 @@ impl Device {
                 let storage = cuda::QCudaStorage::zeros(cuda, elem_count, dtype)?;
                 Ok(QStorage::Cuda(storage))
             }
+            #[cfg(all(feature = "cuda", feature = "rocm"))]
+            Device::Hip(_) => crate::bail!(
+                "quantized storage on the Hip backend is S2 (hip-side quantized coverage); \
+                 dequantize on the host or serve through the Cuda role for now"
+            ),
         }
     }
 }
@@ -133,6 +138,10 @@ impl QStorage {
                 GgmlDType::Q8K => cuda::load_quantized(d, as_t_slice::<BlockQ8K>(data)),
                 GgmlDType::BF16 => cuda::load_quantized(d, as_t_slice::<bf16>(data)),
             },
+            #[cfg(all(feature = "cuda", feature = "rocm"))]
+            Device::Hip(_) => crate::bail!(
+                "quantized storage on the Hip backend is S2 (hip-side quantized coverage)"
+            ),
         }
     }
 
@@ -178,6 +187,10 @@ impl QStorage {
                 GgmlDType::Q8K => cuda::load_quantized_managed(d, as_t_slice::<BlockQ8K>(data)),
                 GgmlDType::BF16 => cuda::load_quantized_managed(d, as_t_slice::<bf16>(data)),
             },
+            #[cfg(all(feature = "cuda", feature = "rocm"))]
+            Device::Hip(_) => crate::bail!(
+                "quantized storage on the Hip backend is S2 (hip-side quantized coverage)"
+            ),
         }
     }
 

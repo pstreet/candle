@@ -92,4 +92,14 @@ macro_rules! gpu_fork_managed {
     ($($tokens:tt)*) => {};
 }
 
+/// Role-owned device-location variant: the shared body cannot name it (both
+/// roles share the feature set), so each role shell defines which
+/// `DeviceLocation` variant its devices report. Single-vendor builds report
+/// `Cuda` exactly as before.
+macro_rules! gpu_backend_location {
+    ($id:expr) => {
+        crate::DeviceLocation::Cuda { gpu_id: $id }
+    };
+}
+
 include!("body/mod.rs");

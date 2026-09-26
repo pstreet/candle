@@ -1,6 +1,8 @@
 use crate::layout::LayoutRelation;
 use crate::op::{BackpropOp, Op};
 use crate::tensor::from_storage;
+#[cfg(all(feature = "cuda", feature = "rocm"))]
+use crate::HipStorage;
 use crate::{bail, CpuStorage, CudaStorage, Layout, MetalStorage, Result, Shape, Storage, Tensor};
 use std::sync::Arc;
 
@@ -19,6 +21,17 @@ pub trait CustomOp1 {
         Err(crate::Error::Cuda(
             format!("no cuda implementation for {}", self.name()).into(),
         ))
+    }
+
+    /// The forward pass, as run on a hip (AMD) device in a dual
+    /// build. Defaults to a bail so existing ops keep compiling;
+    /// hip support is opt-in per op.
+    #[cfg(all(feature = "cuda", feature = "rocm"))]
+    fn hip_fwd(&self, _storage: &HipStorage, _layout: &Layout) -> Result<(HipStorage, Shape)> {
+        Err(crate::Error::Msg(format!(
+            "no hip implementation for {}",
+            self.name()
+        )))
     }
 
     /// The forward pass, as run on a metal gpu device. Note that the storage can use arbitrary strides,
@@ -66,6 +79,24 @@ pub trait CustomOp2 {
         Err(crate::Error::Cuda(
             format!("no cuda implementation for {}", self.name()).into(),
         ))
+    }
+
+    /// The forward pass, as run on a hip (AMD) device in a dual
+    /// build. Defaults to a bail so existing ops keep compiling;
+    /// hip support is opt-in per op.
+    #[cfg(all(feature = "cuda", feature = "rocm"))]
+    fn hip_fwd(
+        &self,
+        _: &HipStorage,
+        _: &Layout,
+        _: &HipStorage,
+        _: &Layout,
+    ) -> Result<(HipStorage, Shape)> {
+        let _ = self.name();
+        Err(crate::Error::Msg(format!(
+            "no hip implementation for {}",
+            self.name()
+        )))
     }
 
     /// The forward pass, as run on a metal gpu device. Note that the storage can use arbitrary strides,
@@ -122,6 +153,26 @@ pub trait CustomOp3 {
         Err(crate::Error::Cuda(
             format!("no cuda implementation for {}", self.name()).into(),
         ))
+    }
+
+    /// The forward pass, as run on a hip (AMD) device in a dual
+    /// build. Defaults to a bail so existing ops keep compiling;
+    /// hip support is opt-in per op.
+    #[cfg(all(feature = "cuda", feature = "rocm"))]
+    fn hip_fwd(
+        &self,
+        _: &HipStorage,
+        _: &Layout,
+        _: &HipStorage,
+        _: &Layout,
+        _: &HipStorage,
+        _: &Layout,
+    ) -> Result<(HipStorage, Shape)> {
+        let _ = self.name();
+        Err(crate::Error::Msg(format!(
+            "no hip implementation for {}",
+            self.name()
+        )))
     }
 
     /// The forward pass, as run on a metal gpu device. Note that the storage can use arbitrary strides,
@@ -264,6 +315,17 @@ pub trait InplaceOp1 {
         ))
     }
 
+    /// The forward pass, as run on a hip (AMD) device in a dual
+    /// build. Defaults to a bail so existing ops keep compiling;
+    /// hip support is opt-in per op.
+    #[cfg(all(feature = "cuda", feature = "rocm"))]
+    fn hip_fwd(&self, _storage: &mut HipStorage, _layout: &Layout) -> Result<()> {
+        Err(crate::Error::Msg(format!(
+            "no hip implementation for {}",
+            self.name()
+        )))
+    }
+
     /// The forward pass, as run on a metal gpu device. Note that the storage can use arbitrary strides,
     /// offsets etc so the associated layout should be used to access it.
     fn metal_fwd(&self, _storage: &mut MetalStorage, _layout: &Layout) -> Result<()> {
@@ -314,6 +376,23 @@ pub trait InplaceOpN<const N: usize> {
         bail!("no cuda implementation for {}", self.name())
     }
 
+    /// The forward pass, as run on a hip (AMD) device in a dual
+    /// build. Defaults to a bail so existing ops keep compiling;
+    /// hip support is opt-in per op.
+    #[cfg(all(feature = "cuda", feature = "rocm"))]
+    fn hip_fwd(
+        &self,
+        dst: &mut HipStorage,
+        dst_l: &Layout,
+        srcs: [(&HipStorage, &Layout); N],
+    ) -> Result<()> {
+        let _ = self.name();
+        Err(crate::Error::Msg(format!(
+            "no hip implementation for {}",
+            self.name()
+        )))
+    }
+
     fn cuda_fwd_aliased(
         &self,
         dst: &mut CudaStorage,
@@ -322,6 +401,23 @@ pub trait InplaceOpN<const N: usize> {
     ) -> Result<()> {
         let _ = (dst, dst_l, srcs);
         bail!("no aliased cpu implementation for {}", self.name())
+    }
+
+    /// The forward pass, as run on a hip (AMD) device in a dual
+    /// build. Defaults to a bail so existing ops keep compiling;
+    /// hip support is opt-in per op.
+    #[cfg(all(feature = "cuda", feature = "rocm"))]
+    fn hip_fwd_aliased(
+        &self,
+        dst: &mut HipStorage,
+        dst_l: &Layout,
+        srcs: [(Src<'_, HipStorage>, &Layout); N],
+    ) -> Result<()> {
+        let _ = self.name();
+        Err(crate::Error::Msg(format!(
+            "no hip implementation for {}",
+            self.name()
+        )))
     }
 
     fn metal_fwd(
@@ -492,6 +588,24 @@ pub trait InplaceOp2 {
         ))
     }
 
+    /// The forward pass, as run on a hip (AMD) device in a dual
+    /// build. Defaults to a bail so existing ops keep compiling;
+    /// hip support is opt-in per op.
+    #[cfg(all(feature = "cuda", feature = "rocm"))]
+    fn hip_fwd(
+        &self,
+        s1: &mut HipStorage,
+        l1: &Layout,
+        s2: &HipStorage,
+        l2: &Layout,
+    ) -> Result<()> {
+        let _ = self.name();
+        Err(crate::Error::Msg(format!(
+            "no hip implementation for {}",
+            self.name()
+        )))
+    }
+
     /// The forward pass, as run on a metal gpu device. Note that the storage can use arbitrary strides,
     /// offsets etc so the associated layout should be used to access it.
     fn metal_fwd(
@@ -578,6 +692,26 @@ pub trait InplaceOp3 {
         Err(crate::Error::Cuda(
             format!("no cuda implementation for {}", self.name()).into(),
         ))
+    }
+
+    /// The forward pass, as run on a hip (AMD) device in a dual
+    /// build. Defaults to a bail so existing ops keep compiling;
+    /// hip support is opt-in per op.
+    #[cfg(all(feature = "cuda", feature = "rocm"))]
+    fn hip_fwd(
+        &self,
+        _: &mut HipStorage,
+        _: &Layout,
+        _: &HipStorage,
+        _: &Layout,
+        _: &HipStorage,
+        _: &Layout,
+    ) -> Result<()> {
+        let _ = self.name();
+        Err(crate::Error::Msg(format!(
+            "no hip implementation for {}",
+            self.name()
+        )))
     }
 
     /// The forward pass, as run on a metal gpu device. Note that the storage can use arbitrary strides,

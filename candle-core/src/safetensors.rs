@@ -272,6 +272,24 @@ impl Tensor {
                         };
                         Storage::Cuda(storage)
                     }
+                    #[cfg(all(feature = "cuda", feature = "rocm"))]
+                    Device::Hip(device) => {
+                        let mut slice = unsafe { device.alloc::<u8>(data.len())? };
+                        device.memcpy_htod(data, &mut slice)?;
+
+                        let slice = match dtype {
+                            DType::F6E2M3 => crate::hip_backend::CudaStorageSlice::F6E2M3(slice),
+                            DType::F6E3M2 => crate::hip_backend::CudaStorageSlice::F6E3M2(slice),
+                            DType::F4 => crate::hip_backend::CudaStorageSlice::F4(slice),
+                            DType::F8E8M0 => crate::hip_backend::CudaStorageSlice::F8E8M0(slice),
+                            _ => unreachable!(),
+                        };
+                        let storage = crate::hip_backend::CudaStorage {
+                            slice,
+                            device: device.clone(),
+                        };
+                        Storage::Hip(storage)
+                    }
                     #[cfg(not(feature = "cuda"))]
                     Device::Cuda(_) => {
                         return Err(Error::Msg("CUDA support not compiled".to_string()));
@@ -375,6 +393,24 @@ fn convert_dummy(view: &st::TensorView<'_>, device: &Device) -> Result<Tensor> {
                 device: device.clone(),
             };
             Storage::Cuda(storage)
+        }
+        #[cfg(all(feature = "cuda", feature = "rocm"))]
+        Device::Hip(device) => {
+            let mut slice = unsafe { device.alloc::<u8>(data.len())? };
+            device.memcpy_htod(data, &mut slice)?;
+
+            let slice = match dtype {
+                DType::F6E2M3 => crate::hip_backend::CudaStorageSlice::F6E2M3(slice),
+                DType::F6E3M2 => crate::hip_backend::CudaStorageSlice::F6E3M2(slice),
+                DType::F4 => crate::hip_backend::CudaStorageSlice::F4(slice),
+                DType::F8E8M0 => crate::hip_backend::CudaStorageSlice::F8E8M0(slice),
+                _ => unreachable!(),
+            };
+            let storage = crate::hip_backend::CudaStorage {
+                slice,
+                device: device.clone(),
+            };
+            Storage::Hip(storage)
         }
         #[cfg(not(feature = "cuda"))]
         Device::Cuda(_) => {

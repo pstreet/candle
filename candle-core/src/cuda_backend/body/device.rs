@@ -664,9 +664,7 @@ impl BackendDevice for CudaDevice {
     }
 
     fn location(&self) -> crate::DeviceLocation {
-        crate::DeviceLocation::Cuda {
-            gpu_id: self.context.ordinal(),
-        }
+        gpu_backend_location!(self.context.ordinal())
     }
 
     fn same_device(&self, rhs: &Self) -> bool {

@@ -18,6 +18,10 @@ impl Tensor {
             crate::DeviceLocation::Metal { gpu_id } => {
                 format!(", metal:{gpu_id}")
             }
+            #[cfg(all(feature = "cuda", feature = "rocm"))]
+            crate::DeviceLocation::Hip { gpu_id } => {
+                format!(", hip:{gpu_id}")
+            }
         };
 
         write!(f, "Tensor[")?;
@@ -544,6 +548,10 @@ impl std::fmt::Display for Tensor {
             }
             crate::DeviceLocation::Metal { gpu_id } => {
                 format!(", metal:{gpu_id}")
+            }
+            #[cfg(all(feature = "cuda", feature = "rocm"))]
+            crate::DeviceLocation::Hip { gpu_id } => {
+                format!(", hip:{gpu_id}")
             }
         };
 
