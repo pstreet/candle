@@ -5,6 +5,8 @@ use crate::driver::{CudaStream, DevicePtrMut};
 use std::sync::Arc;
 
 pub mod sys {
+    // FFI surface: C-ABI names and docless unsafe wrappers mirroring cudarc.
+    #![allow(non_camel_case_types, non_snake_case, clippy::missing_safety_doc)]
     use std::os::raw::{c_double, c_float, c_ulonglong, c_void};
 
     pub type curandGenerator_t = *mut c_void;
@@ -16,6 +18,32 @@ pub mod sys {
     pub const CURAND_RNG_PSEUDO_DEFAULT: curandRngType_t = 400;
     pub const CURAND_STATUS_SUCCESS: curandStatus_t = 0;
 
+    #[cfg(feature = "dynamic-loading")]
+    fn load<F: Copy>(name: &str) -> F {
+        // SAFETY: loading a symbol is not itself unsafe; the `unsafe fn`
+        // wrappers below own the safety contract of each call.
+        unsafe {
+            *curandlib()
+                .get::<F>(name.as_bytes())
+                .unwrap_or_else(|e| panic!("Missing symbol {name}: {e}"))
+        }
+    }
+
+    #[cfg(feature = "dynamic-loading")]
+    unsafe fn curandlib() -> &'static ::libloading::Library {
+        static LIB: std::sync::OnceLock<::libloading::Library> = std::sync::OnceLock::new();
+        LIB.get_or_init(|| {
+            let choices = crate::get_lib_name_candidates("hiprand");
+            for choice in choices.iter() {
+                if let Ok(lib) = ::libloading::Library::new(choice) {
+                    return lib;
+                }
+            }
+            crate::panic_no_lib_found("hiprand", &choices);
+        })
+    }
+
+    #[cfg(not(feature = "dynamic-loading"))]
     extern "C" {
         pub fn hiprandCreateGenerator(
             generator: *mut curandGenerator_t,
@@ -58,6 +86,125 @@ pub mod sys {
             mean: c_double,
             stddev: c_double,
         ) -> curandStatus_t;
+    }
+
+    #[cfg(feature = "dynamic-loading")]
+    pub unsafe fn hiprandCreateGenerator(
+        generator: *mut curandGenerator_t,
+        rng_type: curandRngType_t,
+    ) -> curandStatus_t {
+        let hiprandCreateGenerator: extern "C" fn(
+            *mut curandGenerator_t,
+            curandRngType_t,
+        ) -> curandStatus_t = load("hiprandCreateGenerator");
+        hiprandCreateGenerator(generator, rng_type)
+    }
+
+    #[cfg(feature = "dynamic-loading")]
+    pub unsafe fn hiprandDestroyGenerator(generator: curandGenerator_t) -> curandStatus_t {
+        let hiprandDestroyGenerator: extern "C" fn(curandGenerator_t) -> curandStatus_t =
+            load("hiprandDestroyGenerator");
+        hiprandDestroyGenerator(generator)
+    }
+
+    #[cfg(feature = "dynamic-loading")]
+    pub unsafe fn hiprandSetPseudoRandomGeneratorSeed(
+        generator: curandGenerator_t,
+        seed: c_ulonglong,
+    ) -> curandStatus_t {
+        let hiprandSetPseudoRandomGeneratorSeed: extern "C" fn(
+            curandGenerator_t,
+            c_ulonglong,
+        ) -> curandStatus_t = load("hiprandSetPseudoRandomGeneratorSeed");
+        hiprandSetPseudoRandomGeneratorSeed(generator, seed)
+    }
+
+    #[cfg(feature = "dynamic-loading")]
+    pub unsafe fn hiprandSetPseudoRandomGeneratorOffset(
+        generator: curandGenerator_t,
+        offset: c_ulonglong,
+    ) -> curandStatus_t {
+        let hiprandSetPseudoRandomGeneratorOffset: extern "C" fn(
+            curandGenerator_t,
+            c_ulonglong,
+        ) -> curandStatus_t = load("hiprandSetPseudoRandomGeneratorOffset");
+        hiprandSetPseudoRandomGeneratorOffset(generator, offset)
+    }
+
+    #[cfg(feature = "dynamic-loading")]
+    pub unsafe fn hiprandSetStream(
+        generator: curandGenerator_t,
+        stream: crate::driver::sys::CUstream,
+    ) -> curandStatus_t {
+        let hiprandSetStream: extern "C" fn(
+            curandGenerator_t,
+            crate::driver::sys::CUstream,
+        ) -> curandStatus_t = load("hiprandSetStream");
+        hiprandSetStream(generator, stream)
+    }
+
+    #[cfg(feature = "dynamic-loading")]
+    pub unsafe fn hiprandGenerateUniform(
+        generator: curandGenerator_t,
+        output: *mut c_float,
+        n: usize,
+    ) -> curandStatus_t {
+        let hiprandGenerateUniform: extern "C" fn(
+            curandGenerator_t,
+            *mut c_float,
+            usize,
+        ) -> curandStatus_t = load("hiprandGenerateUniform");
+        hiprandGenerateUniform(generator, output, n)
+    }
+
+    #[cfg(feature = "dynamic-loading")]
+    pub unsafe fn hiprandGenerateUniformDouble(
+        generator: curandGenerator_t,
+        output: *mut c_double,
+        n: usize,
+    ) -> curandStatus_t {
+        let hiprandGenerateUniformDouble: extern "C" fn(
+            curandGenerator_t,
+            *mut c_double,
+            usize,
+        ) -> curandStatus_t = load("hiprandGenerateUniformDouble");
+        hiprandGenerateUniformDouble(generator, output, n)
+    }
+
+    #[cfg(feature = "dynamic-loading")]
+    pub unsafe fn hiprandGenerateNormal(
+        generator: curandGenerator_t,
+        output: *mut c_float,
+        n: usize,
+        mean: c_float,
+        stddev: c_float,
+    ) -> curandStatus_t {
+        let hiprandGenerateNormal: extern "C" fn(
+            curandGenerator_t,
+            *mut c_float,
+            usize,
+            c_float,
+            c_float,
+        ) -> curandStatus_t = load("hiprandGenerateNormal");
+        hiprandGenerateNormal(generator, output, n, mean, stddev)
+    }
+
+    #[cfg(feature = "dynamic-loading")]
+    pub unsafe fn hiprandGenerateNormalDouble(
+        generator: curandGenerator_t,
+        output: *mut c_double,
+        n: usize,
+        mean: c_double,
+        stddev: c_double,
+    ) -> curandStatus_t {
+        let hiprandGenerateNormalDouble: extern "C" fn(
+            curandGenerator_t,
+            *mut c_double,
+            usize,
+            c_double,
+            c_double,
+        ) -> curandStatus_t = load("hiprandGenerateNormalDouble");
+        hiprandGenerateNormalDouble(generator, output, n, mean, stddev)
     }
 }
 

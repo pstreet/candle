@@ -237,6 +237,15 @@ compile error until single-process multi-vendor lands (see the fork
 roadmap). The HIP-synthetic `cc` ints (gfx1151 -> 1150) survive only as the
 kernel-bridge encoding the llama.cpp-derived launchers expect.
 
+On the AMD side, `cudarc-hip` offers a `dynamic-loading` feature that
+resolves the HIP runtime through a runtime dlopen (RTLD_LOCAL) instead of
+link-time dependencies, plus an `is_culib_present()` probe - mirroring
+upstream cudarc's feature of the same name. With it, a binary starts on
+machines with no ROCm installed at all and gates GPU use on the probe;
+dynamic-linking remains the default. The probe and the loader share one
+handle for the process lifetime - the HIP runtime's static initializers
+cannot survive a dlclose/reload cycle.
+
 There are also some wasm examples for whisper and
 [llama2.c](https://github.com/karpathy/llama2.c). You can either build them with
 `trunk` or try them online:

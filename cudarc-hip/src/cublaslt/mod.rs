@@ -25,6 +25,32 @@ pub mod result {
         }
     }
 
+    #[cfg(feature = "dynamic-loading")]
+    fn load<F: Copy>(name: &str) -> F {
+        // SAFETY: loading a symbol is not itself unsafe; the `unsafe fn`
+        // wrappers below own the safety contract of each call.
+        unsafe {
+            *cublasltlib()
+                .get::<F>(name.as_bytes())
+                .unwrap_or_else(|e| panic!("Missing symbol {name}: {e}"))
+        }
+    }
+
+    #[cfg(feature = "dynamic-loading")]
+    unsafe fn cublasltlib() -> &'static ::libloading::Library {
+        static LIB: std::sync::OnceLock<::libloading::Library> = std::sync::OnceLock::new();
+        LIB.get_or_init(|| {
+            let choices = crate::get_lib_name_candidates("hipblaslt");
+            for choice in choices.iter() {
+                if let Ok(lib) = ::libloading::Library::new(choice) {
+                    return lib;
+                }
+            }
+            crate::panic_no_lib_found("hipblaslt", &choices);
+        })
+    }
+
+    #[cfg(not(feature = "dynamic-loading"))]
     extern "C" {
         fn hipblasLtCreate(handle: *mut super::sys::cublasLtHandle_t) -> i32;
         fn hipblasLtDestroy(handle: super::sys::cublasLtHandle_t) -> i32;
@@ -94,6 +120,230 @@ pub mod result {
             workspace_size: usize,
             stream: crate::driver::sys::CUstream,
         ) -> i32;
+    }
+
+    #[cfg(feature = "dynamic-loading")]
+    unsafe fn hipblasLtCreate(handle: *mut super::sys::cublasLtHandle_t) -> i32 {
+        let hipblasLtCreate: extern "C" fn(*mut super::sys::cublasLtHandle_t) -> i32 =
+            load("hipblasLtCreate");
+        hipblasLtCreate(handle)
+    }
+
+    #[cfg(feature = "dynamic-loading")]
+    unsafe fn hipblasLtDestroy(handle: super::sys::cublasLtHandle_t) -> i32 {
+        let hipblasLtDestroy: extern "C" fn(super::sys::cublasLtHandle_t) -> i32 =
+            load("hipblasLtDestroy");
+        hipblasLtDestroy(handle)
+    }
+
+    #[cfg(feature = "dynamic-loading")]
+    unsafe fn hipblasLtMatmulDescCreate(
+        op: *mut super::sys::cublasLtMatmulDesc_t,
+        compute_type: super::sys::cublasComputeType_t,
+        scale_type: super::sys::cudaDataType_t,
+    ) -> i32 {
+        let hipblasLtMatmulDescCreate: extern "C" fn(
+            *mut super::sys::cublasLtMatmulDesc_t,
+            super::sys::cublasComputeType_t,
+            super::sys::cudaDataType_t,
+        ) -> i32 = load("hipblasLtMatmulDescCreate");
+        hipblasLtMatmulDescCreate(op, compute_type, scale_type)
+    }
+
+    #[cfg(feature = "dynamic-loading")]
+    unsafe fn hipblasLtMatmulDescSetAttribute(
+        op: super::sys::cublasLtMatmulDesc_t,
+        attr: super::sys::cublasLtMatmulDescAttributes_t,
+        buf: *const c_void,
+        size: usize,
+    ) -> i32 {
+        let hipblasLtMatmulDescSetAttribute: extern "C" fn(
+            super::sys::cublasLtMatmulDesc_t,
+            super::sys::cublasLtMatmulDescAttributes_t,
+            *const c_void,
+            usize,
+        ) -> i32 = load("hipblasLtMatmulDescSetAttribute");
+        hipblasLtMatmulDescSetAttribute(op, attr, buf, size)
+    }
+
+    #[cfg(feature = "dynamic-loading")]
+    unsafe fn hipblasLtMatmulDescDestroy(op: super::sys::cublasLtMatmulDesc_t) -> i32 {
+        let hipblasLtMatmulDescDestroy: extern "C" fn(super::sys::cublasLtMatmulDesc_t) -> i32 =
+            load("hipblasLtMatmulDescDestroy");
+        hipblasLtMatmulDescDestroy(op)
+    }
+
+    #[cfg(feature = "dynamic-loading")]
+    unsafe fn hipblasLtMatrixLayoutCreate(
+        layout: *mut super::sys::cublasLtMatrixLayout_t,
+        dtype: super::sys::cudaDataType_t,
+        rows: u64,
+        cols: u64,
+        ld: i64,
+    ) -> i32 {
+        let hipblasLtMatrixLayoutCreate: extern "C" fn(
+            *mut super::sys::cublasLtMatrixLayout_t,
+            super::sys::cudaDataType_t,
+            u64,
+            u64,
+            i64,
+        ) -> i32 = load("hipblasLtMatrixLayoutCreate");
+        hipblasLtMatrixLayoutCreate(layout, dtype, rows, cols, ld)
+    }
+
+    #[cfg(feature = "dynamic-loading")]
+    unsafe fn hipblasLtMatrixLayoutSetAttribute(
+        layout: super::sys::cublasLtMatrixLayout_t,
+        attr: super::sys::cublasLtMatrixLayoutAttribute_t,
+        buf: *const c_void,
+        size: usize,
+    ) -> i32 {
+        let hipblasLtMatrixLayoutSetAttribute: extern "C" fn(
+            super::sys::cublasLtMatrixLayout_t,
+            super::sys::cublasLtMatrixLayoutAttribute_t,
+            *const c_void,
+            usize,
+        ) -> i32 = load("hipblasLtMatrixLayoutSetAttribute");
+        hipblasLtMatrixLayoutSetAttribute(layout, attr, buf, size)
+    }
+
+    #[cfg(feature = "dynamic-loading")]
+    unsafe fn hipblasLtMatrixLayoutDestroy(layout: super::sys::cublasLtMatrixLayout_t) -> i32 {
+        let hipblasLtMatrixLayoutDestroy: extern "C" fn(super::sys::cublasLtMatrixLayout_t) -> i32 =
+            load("hipblasLtMatrixLayoutDestroy");
+        hipblasLtMatrixLayoutDestroy(layout)
+    }
+
+    #[cfg(feature = "dynamic-loading")]
+    unsafe fn hipblasLtMatmulPreferenceCreate(
+        pref: *mut super::sys::cublasLtMatmulPreference_t,
+    ) -> i32 {
+        let hipblasLtMatmulPreferenceCreate: extern "C" fn(
+            *mut super::sys::cublasLtMatmulPreference_t,
+        ) -> i32 = load("hipblasLtMatmulPreferenceCreate");
+        hipblasLtMatmulPreferenceCreate(pref)
+    }
+
+    #[cfg(feature = "dynamic-loading")]
+    unsafe fn hipblasLtMatmulPreferenceSetAttribute(
+        pref: super::sys::cublasLtMatmulPreference_t,
+        attr: super::sys::cublasLtMatmulPreferenceAttributes_t,
+        buf: *const c_void,
+        size: usize,
+    ) -> i32 {
+        let hipblasLtMatmulPreferenceSetAttribute: extern "C" fn(
+            super::sys::cublasLtMatmulPreference_t,
+            super::sys::cublasLtMatmulPreferenceAttributes_t,
+            *const c_void,
+            usize,
+        ) -> i32 = load("hipblasLtMatmulPreferenceSetAttribute");
+        hipblasLtMatmulPreferenceSetAttribute(pref, attr, buf, size)
+    }
+
+    #[cfg(feature = "dynamic-loading")]
+    unsafe fn hipblasLtMatmulPreferenceDestroy(
+        pref: super::sys::cublasLtMatmulPreference_t,
+    ) -> i32 {
+        let hipblasLtMatmulPreferenceDestroy: extern "C" fn(
+            super::sys::cublasLtMatmulPreference_t,
+        ) -> i32 = load("hipblasLtMatmulPreferenceDestroy");
+        hipblasLtMatmulPreferenceDestroy(pref)
+    }
+
+    #[cfg(feature = "dynamic-loading")]
+    unsafe fn hipblasLtMatmulAlgoGetHeuristic(
+        handle: super::sys::cublasLtHandle_t,
+        compute_desc: super::sys::cublasLtMatmulDesc_t,
+        a_layout: super::sys::cublasLtMatrixLayout_t,
+        b_layout: super::sys::cublasLtMatrixLayout_t,
+        c_layout: super::sys::cublasLtMatrixLayout_t,
+        d_layout: super::sys::cublasLtMatrixLayout_t,
+        pref: super::sys::cublasLtMatmulPreference_t,
+        requested: c_int,
+        heur: *mut super::sys::cublasLtMatmulHeuristicResult_t,
+        count: *mut c_int,
+    ) -> i32 {
+        let hipblasLtMatmulAlgoGetHeuristic: extern "C" fn(
+            super::sys::cublasLtHandle_t,
+            super::sys::cublasLtMatmulDesc_t,
+            super::sys::cublasLtMatrixLayout_t,
+            super::sys::cublasLtMatrixLayout_t,
+            super::sys::cublasLtMatrixLayout_t,
+            super::sys::cublasLtMatrixLayout_t,
+            super::sys::cublasLtMatmulPreference_t,
+            c_int,
+            *mut super::sys::cublasLtMatmulHeuristicResult_t,
+            *mut c_int,
+        ) -> i32 = load("hipblasLtMatmulAlgoGetHeuristic");
+        hipblasLtMatmulAlgoGetHeuristic(
+            handle,
+            compute_desc,
+            a_layout,
+            b_layout,
+            c_layout,
+            d_layout,
+            pref,
+            requested,
+            heur,
+            count,
+        )
+    }
+
+    #[cfg(feature = "dynamic-loading")]
+    unsafe fn hipblasLtMatmul(
+        handle: super::sys::cublasLtHandle_t,
+        compute_desc: super::sys::cublasLtMatmulDesc_t,
+        alpha: *const c_void,
+        a: *const c_void,
+        a_layout: super::sys::cublasLtMatrixLayout_t,
+        b: *const c_void,
+        b_layout: super::sys::cublasLtMatrixLayout_t,
+        beta: *const c_void,
+        c: *const c_void,
+        c_layout: super::sys::cublasLtMatrixLayout_t,
+        d: *mut c_void,
+        d_layout: super::sys::cublasLtMatrixLayout_t,
+        algo: *const super::sys::cublasLtMatmulAlgo_t,
+        workspace: *mut c_void,
+        workspace_size: usize,
+        stream: crate::driver::sys::CUstream,
+    ) -> i32 {
+        let hipblasLtMatmul: extern "C" fn(
+            super::sys::cublasLtHandle_t,
+            super::sys::cublasLtMatmulDesc_t,
+            *const c_void,
+            *const c_void,
+            super::sys::cublasLtMatrixLayout_t,
+            *const c_void,
+            super::sys::cublasLtMatrixLayout_t,
+            *const c_void,
+            *const c_void,
+            super::sys::cublasLtMatrixLayout_t,
+            *mut c_void,
+            super::sys::cublasLtMatrixLayout_t,
+            *const super::sys::cublasLtMatmulAlgo_t,
+            *mut c_void,
+            usize,
+            crate::driver::sys::CUstream,
+        ) -> i32 = load("hipblasLtMatmul");
+        hipblasLtMatmul(
+            handle,
+            compute_desc,
+            alpha,
+            a,
+            a_layout,
+            b,
+            b_layout,
+            beta,
+            c,
+            c_layout,
+            d,
+            d_layout,
+            algo,
+            workspace,
+            workspace_size,
+            stream,
+        )
     }
 
     pub fn create_handle() -> Result<super::sys::cublasLtHandle_t, CublasError> {
@@ -264,6 +514,8 @@ pub mod result {
 }
 
 pub mod sys {
+    // FFI surface: C-ABI names mirroring cuBLASLt.
+    #![allow(non_camel_case_types, non_snake_case)]
     use std::os::raw::c_void;
 
     pub type cublasLtHandle_t = *mut c_void;

@@ -87,26 +87,105 @@ pub mod safe {
         compile(src.as_str(), &CompileOptions::default())
     }
 
-    fn compile(src: &str, opt: &CompileOptions) -> Result<Ptx, CompileError> {
-        extern "C" {
-            fn hiprtcCreateProgram(
-                prog: *mut *mut c_void,
-                src: *const c_char,
-                name: *const c_char,
-                numHeaders: c_int,
-                headers: *const *const c_char,
-                includeNames: *const *const c_char,
-            ) -> i32;
-            fn hiprtcDestroyProgram(prog: *mut *mut c_void) -> i32;
-            fn hiprtcCompileProgram(
-                prog: *mut c_void,
-                numOpts: c_int,
-                opts: *const *const c_char,
-            ) -> i32;
-            fn hiprtcGetPTXSize(prog: *mut c_void, size: *mut usize) -> i32;
-            fn hiprtcGetPTX(prog: *mut c_void, ptx: *mut c_char) -> i32;
-        }
+    #[cfg(not(feature = "dynamic-loading"))]
+    extern "C" {
+        fn hiprtcCreateProgram(
+            prog: *mut *mut c_void,
+            src: *const c_char,
+            name: *const c_char,
+            numHeaders: c_int,
+            headers: *const *const c_char,
+            includeNames: *const *const c_char,
+        ) -> i32;
+        fn hiprtcDestroyProgram(prog: *mut *mut c_void) -> i32;
+        fn hiprtcCompileProgram(
+            prog: *mut c_void,
+            numOpts: c_int,
+            opts: *const *const c_char,
+        ) -> i32;
+        fn hiprtcGetPTXSize(prog: *mut c_void, size: *mut usize) -> i32;
+        fn hiprtcGetPTX(prog: *mut c_void, ptx: *mut c_char) -> i32;
+    }
 
+    #[cfg(feature = "dynamic-loading")]
+    fn load<F: Copy>(name: &str) -> F {
+        // SAFETY: loading a symbol is not itself unsafe; the `unsafe fn`
+        // wrappers below own the safety contract of each call.
+        unsafe {
+            *nvrtclib()
+                .get::<F>(name.as_bytes())
+                .unwrap_or_else(|e| panic!("Missing symbol {name}: {e}"))
+        }
+    }
+
+    #[cfg(feature = "dynamic-loading")]
+    fn nvrtclib() -> &'static ::libloading::Library {
+        static LIB: std::sync::OnceLock<::libloading::Library> = std::sync::OnceLock::new();
+        LIB.get_or_init(|| {
+            let choices = crate::get_lib_name_candidates("hiprtc");
+            for choice in choices.iter() {
+                // SAFETY: the candidate name comes from our own list; loading
+                // a library executes no init code we do not already trust.
+                if let Ok(lib) = unsafe { ::libloading::Library::new(choice) } {
+                    return lib;
+                }
+            }
+            crate::panic_no_lib_found("hiprtc", &choices);
+        })
+    }
+
+    #[cfg(feature = "dynamic-loading")]
+    unsafe fn hiprtcCreateProgram(
+        prog: *mut *mut c_void,
+        src: *const c_char,
+        name: *const c_char,
+        numHeaders: c_int,
+        headers: *const *const c_char,
+        includeNames: *const *const c_char,
+    ) -> i32 {
+        let hiprtcCreateProgram: extern "C" fn(
+            *mut *mut c_void,
+            *const c_char,
+            *const c_char,
+            c_int,
+            *const *const c_char,
+            *const *const c_char,
+        ) -> i32 = load("hiprtcCreateProgram");
+        hiprtcCreateProgram(prog, src, name, numHeaders, headers, includeNames)
+    }
+
+    #[cfg(feature = "dynamic-loading")]
+    unsafe fn hiprtcDestroyProgram(prog: *mut *mut c_void) -> i32 {
+        let hiprtcDestroyProgram: extern "C" fn(*mut *mut c_void) -> i32 =
+            load("hiprtcDestroyProgram");
+        hiprtcDestroyProgram(prog)
+    }
+
+    #[cfg(feature = "dynamic-loading")]
+    unsafe fn hiprtcCompileProgram(
+        prog: *mut c_void,
+        numOpts: c_int,
+        opts: *const *const c_char,
+    ) -> i32 {
+        let hiprtcCompileProgram: extern "C" fn(*mut c_void, c_int, *const *const c_char) -> i32 =
+            load("hiprtcCompileProgram");
+        hiprtcCompileProgram(prog, numOpts, opts)
+    }
+
+    #[cfg(feature = "dynamic-loading")]
+    unsafe fn hiprtcGetPTXSize(prog: *mut c_void, size: *mut usize) -> i32 {
+        let hiprtcGetPTXSize: extern "C" fn(*mut c_void, *mut usize) -> i32 =
+            load("hiprtcGetPTXSize");
+        hiprtcGetPTXSize(prog, size)
+    }
+
+    #[cfg(feature = "dynamic-loading")]
+    unsafe fn hiprtcGetPTX(prog: *mut c_void, ptx: *mut c_char) -> i32 {
+        let hiprtcGetPTX: extern "C" fn(*mut c_void, *mut c_char) -> i32 = load("hiprtcGetPTX");
+        hiprtcGetPTX(prog, ptx)
+    }
+
+    fn compile(src: &str, opt: &CompileOptions) -> Result<Ptx, CompileError> {
         let c_src = CString::new(src).map_err(|_| CompileError(7))?;
         let c_name = CString::new("candle_module").unwrap();
         let mut prog: *mut c_void = std::ptr::null_mut();

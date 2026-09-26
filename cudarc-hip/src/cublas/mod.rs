@@ -24,6 +24,32 @@ pub mod result {
         }
     }
 
+    #[cfg(feature = "dynamic-loading")]
+    fn load<F: Copy>(name: &str) -> F {
+        // SAFETY: loading a symbol is not itself unsafe; the `unsafe fn`
+        // wrappers below own the safety contract of each call.
+        unsafe {
+            *cublaslib()
+                .get::<F>(name.as_bytes())
+                .unwrap_or_else(|e| panic!("Missing symbol {name}: {e}"))
+        }
+    }
+
+    #[cfg(feature = "dynamic-loading")]
+    unsafe fn cublaslib() -> &'static ::libloading::Library {
+        static LIB: std::sync::OnceLock<::libloading::Library> = std::sync::OnceLock::new();
+        LIB.get_or_init(|| {
+            let choices = crate::get_lib_name_candidates("hipblas");
+            for choice in choices.iter() {
+                if let Ok(lib) = ::libloading::Library::new(choice) {
+                    return lib;
+                }
+            }
+            crate::panic_no_lib_found("hipblas", &choices);
+        })
+    }
+
+    #[cfg(not(feature = "dynamic-loading"))]
     extern "C" {
         fn hipblasCreate(handle: *mut *mut super::sys::cublasHandle_t) -> i32;
         fn hipblasDestroy(handle: super::sys::cublasHandle_t) -> i32;
@@ -93,6 +119,214 @@ pub mod result {
             c: *mut half::f16,
             ldc: c_int,
         ) -> i32;
+    }
+
+    #[cfg(feature = "dynamic-loading")]
+    unsafe fn hipblasCreate(handle: *mut *mut super::sys::cublasHandle_t) -> i32 {
+        let hipblasCreate: extern "C" fn(*mut *mut super::sys::cublasHandle_t) -> i32 =
+            load("hipblasCreate");
+        hipblasCreate(handle)
+    }
+
+    #[cfg(feature = "dynamic-loading")]
+    unsafe fn hipblasDestroy(handle: super::sys::cublasHandle_t) -> i32 {
+        let hipblasDestroy: extern "C" fn(super::sys::cublasHandle_t) -> i32 =
+            load("hipblasDestroy");
+        hipblasDestroy(handle)
+    }
+
+    #[cfg(feature = "dynamic-loading")]
+    unsafe fn hipblasSetStream(
+        handle: super::sys::cublasHandle_t,
+        stream: super::sys::CUstream,
+    ) -> i32 {
+        let hipblasSetStream: extern "C" fn(
+            super::sys::cublasHandle_t,
+            super::sys::CUstream,
+        ) -> i32 = load("hipblasSetStream");
+        hipblasSetStream(handle, stream)
+    }
+
+    #[cfg(feature = "dynamic-loading")]
+    unsafe fn hipblasGemmEx(
+        handle: super::sys::cublasHandle_t,
+        transa: super::sys::cublasOperation_t,
+        transb: super::sys::cublasOperation_t,
+        m: c_int,
+        n: c_int,
+        k: c_int,
+        alpha: *const core::ffi::c_void,
+        a: *const core::ffi::c_void,
+        a_type: super::sys::cudaDataType_t,
+        lda: c_int,
+        b: *const core::ffi::c_void,
+        b_type: super::sys::cudaDataType_t,
+        ldb: c_int,
+        beta: *const core::ffi::c_void,
+        c: *mut core::ffi::c_void,
+        c_type: super::sys::cudaDataType_t,
+        ldc: c_int,
+        compute_type: super::sys::cublasComputeType_t,
+        algo: super::sys::cublasGemmAlgo_t,
+    ) -> i32 {
+        let hipblasGemmEx: extern "C" fn(
+            super::sys::cublasHandle_t,
+            super::sys::cublasOperation_t,
+            super::sys::cublasOperation_t,
+            c_int,
+            c_int,
+            c_int,
+            *const core::ffi::c_void,
+            *const core::ffi::c_void,
+            super::sys::cudaDataType_t,
+            c_int,
+            *const core::ffi::c_void,
+            super::sys::cudaDataType_t,
+            c_int,
+            *const core::ffi::c_void,
+            *mut core::ffi::c_void,
+            super::sys::cudaDataType_t,
+            c_int,
+            super::sys::cublasComputeType_t,
+            super::sys::cublasGemmAlgo_t,
+        ) -> i32 = load("hipblasGemmEx");
+        hipblasGemmEx(
+            handle,
+            transa,
+            transb,
+            m,
+            n,
+            k,
+            alpha,
+            a,
+            a_type,
+            lda,
+            b,
+            b_type,
+            ldb,
+            beta,
+            c,
+            c_type,
+            ldc,
+            compute_type,
+            algo,
+        )
+    }
+
+    #[cfg(feature = "dynamic-loading")]
+    unsafe fn hipblasGemmStridedBatchedEx(
+        handle: super::sys::cublasHandle_t,
+        transa: super::sys::cublasOperation_t,
+        transb: super::sys::cublasOperation_t,
+        m: c_int,
+        n: c_int,
+        k: c_int,
+        alpha: *const core::ffi::c_void,
+        a: *const core::ffi::c_void,
+        a_type: super::sys::cudaDataType_t,
+        lda: c_int,
+        stride_a: i64,
+        b: *const core::ffi::c_void,
+        b_type: super::sys::cudaDataType_t,
+        ldb: c_int,
+        stride_b: i64,
+        beta: *const core::ffi::c_void,
+        c: *mut core::ffi::c_void,
+        c_type: super::sys::cudaDataType_t,
+        ldc: c_int,
+        stride_c: i64,
+        batch_count: c_int,
+        compute_type: super::sys::cublasComputeType_t,
+        algo: super::sys::cublasGemmAlgo_t,
+    ) -> i32 {
+        let hipblasGemmStridedBatchedEx: extern "C" fn(
+            super::sys::cublasHandle_t,
+            super::sys::cublasOperation_t,
+            super::sys::cublasOperation_t,
+            c_int,
+            c_int,
+            c_int,
+            *const core::ffi::c_void,
+            *const core::ffi::c_void,
+            super::sys::cudaDataType_t,
+            c_int,
+            i64,
+            *const core::ffi::c_void,
+            super::sys::cudaDataType_t,
+            c_int,
+            i64,
+            *const core::ffi::c_void,
+            *mut core::ffi::c_void,
+            super::sys::cudaDataType_t,
+            c_int,
+            i64,
+            c_int,
+            super::sys::cublasComputeType_t,
+            super::sys::cublasGemmAlgo_t,
+        ) -> i32 = load("hipblasGemmStridedBatchedEx");
+        hipblasGemmStridedBatchedEx(
+            handle,
+            transa,
+            transb,
+            m,
+            n,
+            k,
+            alpha,
+            a,
+            a_type,
+            lda,
+            stride_a,
+            b,
+            b_type,
+            ldb,
+            stride_b,
+            beta,
+            c,
+            c_type,
+            ldc,
+            stride_c,
+            batch_count,
+            compute_type,
+            algo,
+        )
+    }
+
+    #[cfg(feature = "dynamic-loading")]
+    unsafe fn hipblasHgemm(
+        handle: super::sys::cublasHandle_t,
+        transa: super::sys::cublasOperation_t,
+        transb: super::sys::cublasOperation_t,
+        m: c_int,
+        n: c_int,
+        k: c_int,
+        alpha: *const half::f16,
+        a: *const half::f16,
+        lda: c_int,
+        b: *const half::f16,
+        ldb: c_int,
+        beta: *const half::f16,
+        c: *mut half::f16,
+        ldc: c_int,
+    ) -> i32 {
+        let hipblasHgemm: extern "C" fn(
+            super::sys::cublasHandle_t,
+            super::sys::cublasOperation_t,
+            super::sys::cublasOperation_t,
+            c_int,
+            c_int,
+            c_int,
+            *const half::f16,
+            *const half::f16,
+            c_int,
+            *const half::f16,
+            c_int,
+            *const half::f16,
+            *mut half::f16,
+            c_int,
+        ) -> i32 = load("hipblasHgemm");
+        hipblasHgemm(
+            handle, transa, transb, m, n, k, alpha, a, lda, b, ldb, beta, c, ldc,
+        )
     }
 
     pub unsafe fn create(handle: *mut super::sys::cublasHandle_t) -> Result<(), CublasError> {
@@ -231,6 +465,8 @@ pub mod result {
 pub mod sys {
     //! cuBLAS-compatible enumerations (values matching the CUDA/cuBLAS ABI where
     //! hipBLAS agrees, otherwise mapped from the hipBLAS constants).
+    // FFI surface: C-ABI names mirroring cuBLAS.
+    #![allow(non_camel_case_types, non_snake_case)]
     use std::os::raw::c_void;
 
     pub type cublasHandle_t = *mut c_void;
