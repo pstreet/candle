@@ -130,4 +130,28 @@ mod dual_backend_tests {
             .get_or_load_func(&super::kernel_name::<f32>("affine"), &kernels::AFFINE)
             .expect("affine module loads");
     }
+
+    #[test]
+    fn cuda_role_constructor_refuses_cleanly_without_driver() {
+        // Hot-pluggable: on this driver-less box the NVIDIA probe is false,
+        // so the constructor must return a clean Err (never the cudarc
+        // first-driver-call panic), availability must report false, and the
+        // _if_available helper must fall back to CPU. With a driver present
+        // the probe passes and the test skips its assertions.
+        if unsafe { crate::cudarc::driver::sys::is_culib_present() } {
+            return;
+        }
+        assert!(!crate::utils::cuda_is_available());
+        let err = Device::new_cuda(0).expect_err("no NVIDIA runtime here");
+        assert!(err.to_string().contains("not loadable"), "{err}");
+        assert!(Device::cuda_if_available(0).expect("cpu fallback").is_cpu());
+    }
+
+    #[test]
+    fn hip_role_constructor_gated_on_probe() {
+        // Mirror image on the present runtime: the probe is true, the
+        // availability helper agrees, and construction succeeds.
+        assert!(crate::utils::hip_is_available());
+        assert!(Device::new_hip(0).is_ok());
+    }
 }

@@ -54,7 +54,11 @@ default = []
 cuda = ["cudarc", "dep:candle-kernels", "candle-ug?/cuda"]
 # Multi-vendor build: both backends in one binary. `cuda_backend` becomes the
 # NVIDIA role (real cudarc + the PTX twin crate), `hip_backend` the AMD role.
-"cuda+rocm" = ["cuda", "rocm", "dep:candle-kernels-cuda"]
+# Both vendors resolve at runtime (hot-pluggable): cudarc-hip switches to its
+# dynamic-loading mode so the binary starts with no ROCm installed - GPU use
+# stays gated on the is_culib_present() probes. Single-vendor `rocm` keeps
+# dynamic-linking (production behavior).
+"cuda+rocm" = ["cuda", "rocm", "dep:candle-kernels-cuda", "cudarc-hip/dynamic-loading"]
 rocm = [
     "dep:cudarc-hip",
     "dep:candle-kernels",

@@ -247,6 +247,14 @@ impl<S: WithDType> NdArray for Vec<Vec<Vec<Vec<S>>>> {
 
 impl Device {
     pub fn new_cuda(ordinal: usize) -> Result<Self> {
+        // Hot-pluggable: never touch the driver without the probe. Under
+        // dynamic-loading the first driver call with no runtime present
+        // panics instead of returning Err. `crate::cudarc` binds per shape,
+        // so this gates the backend behind `Device::Cuda` in every shape.
+        #[cfg(any(feature = "cuda", feature = "rocm"))]
+        if !unsafe { crate::cudarc::driver::sys::is_culib_present() } {
+            crate::bail!("GPU device requested but its runtime is not loadable on this machine");
+        }
         Ok(Self::Cuda(crate::CudaDevice::new(ordinal)?))
     }
 
@@ -271,18 +279,30 @@ impl Device {
     }
 
     pub fn new_cuda_with_stream(ordinal: usize) -> Result<Self> {
+        #[cfg(any(feature = "cuda", feature = "rocm"))]
+        if !unsafe { crate::cudarc::driver::sys::is_culib_present() } {
+            crate::bail!("GPU device requested but its runtime is not loadable on this machine");
+        }
         Ok(Self::Cuda(crate::CudaDevice::new_with_stream(ordinal)?))
     }
 
     /// AMD-role device of a dual build (`hip:<ordinal>` in S3 routing).
+    /// Probe-gated like `new_cuda`: a clean Err naming the missing ROCm
+    /// runtime, never a driver panic on machines without one.
     #[cfg(all(feature = "cuda", feature = "rocm"))]
     pub fn new_hip(ordinal: usize) -> Result<Self> {
+        if !unsafe { crate::hip_backend::cudarc::driver::sys::is_culib_present() } {
+            crate::bail!("hip device requested but no ROCm runtime is loadable on this machine");
+        }
         Ok(Self::Hip(crate::HipDevice::new(ordinal)?))
     }
 
     /// AMD-role device of a dual build, with its own stream.
     #[cfg(all(feature = "cuda", feature = "rocm"))]
     pub fn new_hip_with_stream(ordinal: usize) -> Result<Self> {
+        if !unsafe { crate::hip_backend::cudarc::driver::sys::is_culib_present() } {
+            crate::bail!("hip device requested but no ROCm runtime is loadable on this machine");
+        }
         Ok(Self::Hip(crate::HipDevice::new_with_stream(ordinal)?))
     }
 
