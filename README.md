@@ -209,6 +209,31 @@ export CANDLE_NO_FAST_MMQ=1
 export CANDLE_MANAGED_WEIGHTS=1
 ```
 
+## Multi-vendor builds (cuda+rocm)
+
+`--features cuda+rocm` builds a dual-vendor binary. CPU is unconditional in
+every build shape. In the dual shape the AMD side is the serving role (the
+llama.cpp-derived C kernels are hipcc-built; `Device::Hip`/`Storage::Hip`
+carry the role) and the NVIDIA side is compiled in for interop with every
+driver call gated on the `is_culib_present()` probe - cudarc uses the
+dynamic-loading mode, so the binary starts and serves with no NVIDIA runtime
+on the machine at all. A `cuda`-only build is not maintained in this fork.
+
+Building the NVIDIA half needs the CUDA toolkit even without an NVIDIA GPU.
+Point the env at the toolkit and pin the compute capability (the default
+detection needs a driver):
+
+```bash
+export CUDA_PATH=/usr/local/cuda-13.3
+export PATH=/usr/local/cuda-13.3/bin:$PATH
+export CUDA_COMPUTE_CAP=80   # GPU-less build boxes; with a driver -> auto
+```
+
+JIT kernel sources are shared: `candle-kernels-cuda` compiles the same .cu
+files to PTX through cudaforge (see its README for the deliberately omitted
+static archive and the capability fallback). GPU-facing changes must check
+all three shapes: no features, `rocm`, and `cuda+rocm`.
+
 ## GPU architecture identity
 
 `candle_core::GpuArch` is the typed device identity all GPU policy code
@@ -230,12 +255,13 @@ legacy struct (no `gcnArchName`), and the modern struct's field offsets are
 not stable across ROCm versions. If the name is unparseable, resolution
 falls back to the synthetic compute-cap family with zeroed step fields.
 
-Build feature matrix: exactly one GPU backend per binary. Default builds
-are CPU-only (`GpuArch` exists, `resolve` is not compiled); `cuda` and
-`rocm` select the NVIDIA and AMD backends; `cuda`+`rocm` together is a
-compile error until single-process multi-vendor lands (see the fork
-roadmap). The HIP-synthetic `cc` ints (gfx1151 -> 1150) survive only as the
-kernel-bridge encoding the llama.cpp-derived launchers expect.
+Build feature matrix: default builds are CPU-only (`GpuArch` exists,
+`resolve` is not compiled); `cuda` selects the NVIDIA backend, `rocm` the
+AMD backend, and `cuda+rocm` builds the dual-vendor binary where the AMD
+side serves and NVIDIA access is probe-gated (see "Multi-vendor builds"
+above). CPU is unconditional in every shape. The HIP-synthetic `cc` ints
+(gfx1151 -> 1150) survive only as the kernel-bridge encoding the
+llama.cpp-derived launchers expect.
 
 ## Multi-vendor builds (`cuda+rocm`)
 
