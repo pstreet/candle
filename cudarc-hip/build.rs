@@ -13,12 +13,14 @@ fn main() {
         .or_else(|| env::var("ROCM_PATH").ok())
         .filter(|p| !p.is_empty());
 
+    // Always watch the env: the no-toolchain fallback below must not linger
+    // in cache when the env appears later (stale link-search breaks links).
+    println!("cargo::rerun-if-env-changed=CANDLE_ROCM_PATH");
+    println!("cargo::rerun-if-env-changed=ROCM_HOME");
+    println!("cargo::rerun-if-env-changed=ROCM_PATH");
     if !dynamic_loading {
         match &rocm {
             Some(dir) => {
-                println!("cargo::rerun-if-env-changed=CANDLE_ROCM_PATH");
-                println!("cargo::rerun-if-env-changed=ROCM_HOME");
-                println!("cargo::rerun-if-env-changed=ROCM_PATH");
                 println!("cargo::rustc-link-search=native={}/lib", dir);
             }
             None => {

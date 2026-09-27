@@ -68,8 +68,6 @@ pub mod error;
 pub mod gpu;
 #[cfg(all(feature = "cuda", feature = "rocm"))]
 pub mod hip_backend;
-#[cfg(any(feature = "cuda", feature = "rocm"))]
-pub mod role;
 mod indexer;
 pub mod layout;
 #[cfg(feature = "metal")]
@@ -81,6 +79,8 @@ pub mod npy;
 pub mod op;
 pub mod pickle;
 pub mod quantized;
+#[cfg(any(feature = "cuda", feature = "rocm"))]
+pub mod role;
 pub mod safetensors;
 pub mod scalar;
 pub mod shape;

@@ -116,3 +116,13 @@ objc2-foundation = { version = "0.3.1" }
 [profile.release-with-debug]
 inherits = "release"
 debug = true
+
+# Iteration gate for correctness loops and link debugging: parallel codegen,
+# no LTO pass. Mirrors mistral.rs's `fast` profile. Benchmark and production
+# builds stay on `release`/`release-with-debug`.
+[profile.fast]
+inherits = "release"
+lto = false
+codegen-units = 32
+debug = 1
+incremental = true
