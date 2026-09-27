@@ -1,9 +1,11 @@
+#![allow(dead_code)]
+#![allow(improper_ctypes)]
+
+use crate::kernel_decl::declare_kernel;
 use core::ffi::c_void;
-#[allow(dead_code)]
-#[allow(improper_ctypes)]
-extern "C" {
+declare_kernel! {
     // for unquntized models
-    pub fn moe_gemm_wmma(
+    moe_gemm_wmma(
         input: *const c_void,         // device pointer [size_m, size_k]
         weights: *const c_void,       // device pointer [num_experts, size_n, size_k]
         sorted_token_ids: *const i32, // device pointer [size_m]
@@ -21,8 +23,7 @@ extern "C" {
         is_prefill: bool,
         stream: i64,
     );
-
-    pub fn moe_gemm_gguf(
+    moe_gemm_gguf(
         input: *const f32,      // input [size_m, size_k]
         weights: *const c_void, // weights [num_experts, size_n, size_k]
         sorted_token_ids: *const i32,
@@ -39,8 +40,7 @@ extern "C" {
         // Optional pre-allocated q8_1 scratch; nullptr to allocate internally.
         y_q8_1_scratch: *mut c_void,
     );
-
-    pub fn moe_gemm_gguf_prefill(
+    moe_gemm_gguf_prefill(
         input: *const c_void, // input [size_m, size_k]
         weights: *const u8,   // weights [num_experts, size_n, size_k]
         sorted_token_ids: *const i32,
@@ -56,11 +56,9 @@ extern "C" {
         gguf_dtype: i32,  //Q8_0: 0, Q4K: 1, Q2K: 2, Q3k: 3,  Q5K: 4, Q6K: 5  (for weights)
         stream: i64,
     );
-
     // ============== Dense GGUF MMVQ launchers (from mmvq_gguf.cu) ==============
-
     // BF16 output launchers
-    pub fn launch_mmvq_gguf_q4_0_bf16_plain(
+    launch_mmvq_gguf_q4_0_bf16_plain(
         vx: *const c_void,
         vy: *const c_void,
         dst: *mut c_void,
@@ -71,7 +69,7 @@ extern "C" {
         b_size: i32,
         stream: *mut c_void,
     );
-    pub fn launch_mmvq_gguf_q4_1_bf16_plain(
+    launch_mmvq_gguf_q4_1_bf16_plain(
         vx: *const c_void,
         vy: *const c_void,
         dst: *mut c_void,
@@ -82,7 +80,7 @@ extern "C" {
         b_size: i32,
         stream: *mut c_void,
     );
-    pub fn launch_mmvq_gguf_q5_0_bf16_plain(
+    launch_mmvq_gguf_q5_0_bf16_plain(
         vx: *const c_void,
         vy: *const c_void,
         dst: *mut c_void,
@@ -93,7 +91,7 @@ extern "C" {
         b_size: i32,
         stream: *mut c_void,
     );
-    pub fn launch_mmvq_gguf_q5_1_bf16_plain(
+    launch_mmvq_gguf_q5_1_bf16_plain(
         vx: *const c_void,
         vy: *const c_void,
         dst: *mut c_void,
@@ -104,7 +102,7 @@ extern "C" {
         b_size: i32,
         stream: *mut c_void,
     );
-    pub fn launch_mmvq_gguf_q8_0_bf16_plain(
+    launch_mmvq_gguf_q8_0_bf16_plain(
         vx: *const c_void,
         vy: *const c_void,
         dst: *mut c_void,
@@ -115,7 +113,7 @@ extern "C" {
         b_size: i32,
         stream: *mut c_void,
     );
-    pub fn launch_mmvq_gguf_q2_k_bf16_plain(
+    launch_mmvq_gguf_q2_k_bf16_plain(
         vx: *const c_void,
         vy: *const c_void,
         dst: *mut c_void,
@@ -126,7 +124,7 @@ extern "C" {
         b_size: i32,
         stream: *mut c_void,
     );
-    pub fn launch_mmvq_gguf_q3_k_bf16_plain(
+    launch_mmvq_gguf_q3_k_bf16_plain(
         vx: *const c_void,
         vy: *const c_void,
         dst: *mut c_void,
@@ -137,7 +135,7 @@ extern "C" {
         b_size: i32,
         stream: *mut c_void,
     );
-    pub fn launch_mmvq_gguf_q4_k_bf16_plain(
+    launch_mmvq_gguf_q4_k_bf16_plain(
         vx: *const c_void,
         vy: *const c_void,
         dst: *mut c_void,
@@ -148,7 +146,7 @@ extern "C" {
         b_size: i32,
         stream: *mut c_void,
     );
-    pub fn launch_mmvq_gguf_q5_k_bf16_plain(
+    launch_mmvq_gguf_q5_k_bf16_plain(
         vx: *const c_void,
         vy: *const c_void,
         dst: *mut c_void,
@@ -159,7 +157,7 @@ extern "C" {
         b_size: i32,
         stream: *mut c_void,
     );
-    pub fn launch_mmvq_gguf_q6_k_bf16_plain(
+    launch_mmvq_gguf_q6_k_bf16_plain(
         vx: *const c_void,
         vy: *const c_void,
         dst: *mut c_void,
@@ -170,9 +168,8 @@ extern "C" {
         b_size: i32,
         stream: *mut c_void,
     );
-
     // F32 output launchers
-    pub fn launch_mmvq_gguf_q4_0_f32_plain(
+    launch_mmvq_gguf_q4_0_f32_plain(
         vx: *const c_void,
         vy: *const c_void,
         dst: *mut c_void,
@@ -183,7 +180,7 @@ extern "C" {
         b_size: i32,
         stream: *mut c_void,
     );
-    pub fn launch_mmvq_gguf_q4_1_f32_plain(
+    launch_mmvq_gguf_q4_1_f32_plain(
         vx: *const c_void,
         vy: *const c_void,
         dst: *mut c_void,
@@ -194,7 +191,7 @@ extern "C" {
         b_size: i32,
         stream: *mut c_void,
     );
-    pub fn launch_mmvq_gguf_q5_0_f32_plain(
+    launch_mmvq_gguf_q5_0_f32_plain(
         vx: *const c_void,
         vy: *const c_void,
         dst: *mut c_void,
@@ -205,7 +202,7 @@ extern "C" {
         b_size: i32,
         stream: *mut c_void,
     );
-    pub fn launch_mmvq_gguf_q5_1_f32_plain(
+    launch_mmvq_gguf_q5_1_f32_plain(
         vx: *const c_void,
         vy: *const c_void,
         dst: *mut c_void,
@@ -216,7 +213,7 @@ extern "C" {
         b_size: i32,
         stream: *mut c_void,
     );
-    pub fn launch_mmvq_gguf_q8_0_f32_plain(
+    launch_mmvq_gguf_q8_0_f32_plain(
         vx: *const c_void,
         vy: *const c_void,
         dst: *mut c_void,
@@ -227,7 +224,7 @@ extern "C" {
         b_size: i32,
         stream: *mut c_void,
     );
-    pub fn launch_mmvq_gguf_q2_k_f32_plain(
+    launch_mmvq_gguf_q2_k_f32_plain(
         vx: *const c_void,
         vy: *const c_void,
         dst: *mut c_void,
@@ -238,7 +235,7 @@ extern "C" {
         b_size: i32,
         stream: *mut c_void,
     );
-    pub fn launch_mmvq_gguf_q3_k_f32_plain(
+    launch_mmvq_gguf_q3_k_f32_plain(
         vx: *const c_void,
         vy: *const c_void,
         dst: *mut c_void,
@@ -249,7 +246,7 @@ extern "C" {
         b_size: i32,
         stream: *mut c_void,
     );
-    pub fn launch_mmvq_gguf_q4_k_f32_plain(
+    launch_mmvq_gguf_q4_k_f32_plain(
         vx: *const c_void,
         vy: *const c_void,
         dst: *mut c_void,
@@ -260,7 +257,7 @@ extern "C" {
         b_size: i32,
         stream: *mut c_void,
     );
-    pub fn launch_mmvq_gguf_q5_k_f32_plain(
+    launch_mmvq_gguf_q5_k_f32_plain(
         vx: *const c_void,
         vy: *const c_void,
         dst: *mut c_void,
@@ -271,7 +268,7 @@ extern "C" {
         b_size: i32,
         stream: *mut c_void,
     );
-    pub fn launch_mmvq_gguf_q6_k_f32_plain(
+    launch_mmvq_gguf_q6_k_f32_plain(
         vx: *const c_void,
         vy: *const c_void,
         dst: *mut c_void,
@@ -282,8 +279,7 @@ extern "C" {
         b_size: i32,
         stream: *mut c_void,
     );
-
-    pub fn launch_mmvq_gguf_q4_0_f16_plain(
+    launch_mmvq_gguf_q4_0_f16_plain(
         vx: *const c_void,
         vy: *const c_void,
         dst: *mut c_void,
@@ -294,7 +290,7 @@ extern "C" {
         b_size: i32,
         stream: *mut c_void,
     );
-    pub fn launch_mmvq_gguf_q4_1_f16_plain(
+    launch_mmvq_gguf_q4_1_f16_plain(
         vx: *const c_void,
         vy: *const c_void,
         dst: *mut c_void,
@@ -305,7 +301,7 @@ extern "C" {
         b_size: i32,
         stream: *mut c_void,
     );
-    pub fn launch_mmvq_gguf_q5_0_f16_plain(
+    launch_mmvq_gguf_q5_0_f16_plain(
         vx: *const c_void,
         vy: *const c_void,
         dst: *mut c_void,
@@ -316,7 +312,7 @@ extern "C" {
         b_size: i32,
         stream: *mut c_void,
     );
-    pub fn launch_mmvq_gguf_q5_1_f16_plain(
+    launch_mmvq_gguf_q5_1_f16_plain(
         vx: *const c_void,
         vy: *const c_void,
         dst: *mut c_void,
@@ -327,7 +323,7 @@ extern "C" {
         b_size: i32,
         stream: *mut c_void,
     );
-    pub fn launch_mmvq_gguf_q8_0_f16_plain(
+    launch_mmvq_gguf_q8_0_f16_plain(
         vx: *const c_void,
         vy: *const c_void,
         dst: *mut c_void,
@@ -338,7 +334,7 @@ extern "C" {
         b_size: i32,
         stream: *mut c_void,
     );
-    pub fn launch_mmvq_gguf_q2_k_f16_plain(
+    launch_mmvq_gguf_q2_k_f16_plain(
         vx: *const c_void,
         vy: *const c_void,
         dst: *mut c_void,
@@ -349,7 +345,7 @@ extern "C" {
         b_size: i32,
         stream: *mut c_void,
     );
-    pub fn launch_mmvq_gguf_q3_k_f16_plain(
+    launch_mmvq_gguf_q3_k_f16_plain(
         vx: *const c_void,
         vy: *const c_void,
         dst: *mut c_void,
@@ -360,7 +356,7 @@ extern "C" {
         b_size: i32,
         stream: *mut c_void,
     );
-    pub fn launch_mmvq_gguf_q4_k_f16_plain(
+    launch_mmvq_gguf_q4_k_f16_plain(
         vx: *const c_void,
         vy: *const c_void,
         dst: *mut c_void,
@@ -371,7 +367,7 @@ extern "C" {
         b_size: i32,
         stream: *mut c_void,
     );
-    pub fn launch_mmvq_gguf_q5_k_f16_plain(
+    launch_mmvq_gguf_q5_k_f16_plain(
         vx: *const c_void,
         vy: *const c_void,
         dst: *mut c_void,
@@ -382,7 +378,7 @@ extern "C" {
         b_size: i32,
         stream: *mut c_void,
     );
-    pub fn launch_mmvq_gguf_q6_k_f16_plain(
+    launch_mmvq_gguf_q6_k_f16_plain(
         vx: *const c_void,
         vy: *const c_void,
         dst: *mut c_void,
@@ -393,9 +389,8 @@ extern "C" {
         b_size: i32,
         stream: *mut c_void,
     );
-
     // Quantize launchers (activation → Q8_1)
-    pub fn launch_mmvq_gguf_quantize_q8_1_bf16(
+    launch_mmvq_gguf_quantize_q8_1_bf16(
         x: *const c_void,
         vy: *mut c_void,
         kx: i32,
@@ -403,7 +398,7 @@ extern "C" {
         num_rows: i32,
         stream: *mut c_void,
     );
-    pub fn launch_mmvq_gguf_quantize_q8_1_f16(
+    launch_mmvq_gguf_quantize_q8_1_f16(
         x: *const c_void,
         vy: *mut c_void,
         kx: i32,
@@ -411,7 +406,7 @@ extern "C" {
         num_rows: i32,
         stream: *mut c_void,
     );
-    pub fn launch_mmvq_gguf_quantize_q8_1_f32(
+    launch_mmvq_gguf_quantize_q8_1_f32(
         x: *const c_void,
         vy: *mut c_void,
         kx: i32,
@@ -419,11 +414,9 @@ extern "C" {
         num_rows: i32,
         stream: *mut c_void,
     );
-
     // ============== Dense GGUF MMQ launchers (from mmq_gguf/) ==============
-
     // MMQ quantize launchers (f32 -> block_q8_1_mmq, 3 scale layouts)
-    pub fn launch_mmq_quantize_q8_1_D4(
+    launch_mmq_quantize_q8_1_D4(
         x: *const c_void,
         ids: *const i32,
         vy: *mut c_void,
@@ -438,7 +431,7 @@ extern "C" {
         ne3: i64,
         stream: *mut c_void,
     );
-    pub fn launch_mmq_quantize_q8_1_DS4(
+    launch_mmq_quantize_q8_1_DS4(
         x: *const c_void,
         ids: *const i32,
         vy: *mut c_void,
@@ -453,7 +446,7 @@ extern "C" {
         ne3: i64,
         stream: *mut c_void,
     );
-    pub fn launch_mmq_quantize_q8_1_D2S6(
+    launch_mmq_quantize_q8_1_D2S6(
         x: *const c_void,
         ids: *const i32,
         vy: *mut c_void,
@@ -468,9 +461,8 @@ extern "C" {
         ne3: i64,
         stream: *mut c_void,
     );
-
     // MMQ matmul launchers (one per quant type)
-    pub fn launch_mmq_gguf_q4_0(
+    launch_mmq_gguf_q4_0(
         tmp_fixup: *mut c_void,
         x: *const c_void,
         y: *const c_void,
@@ -486,7 +478,7 @@ extern "C" {
         warp_size: i32,
         stream: *mut c_void,
     );
-    pub fn launch_mmq_gguf_q4_1(
+    launch_mmq_gguf_q4_1(
         tmp_fixup: *mut c_void,
         x: *const c_void,
         y: *const c_void,
@@ -502,7 +494,7 @@ extern "C" {
         warp_size: i32,
         stream: *mut c_void,
     );
-    pub fn launch_mmq_gguf_q5_0(
+    launch_mmq_gguf_q5_0(
         tmp_fixup: *mut c_void,
         x: *const c_void,
         y: *const c_void,
@@ -518,7 +510,7 @@ extern "C" {
         warp_size: i32,
         stream: *mut c_void,
     );
-    pub fn launch_mmq_gguf_q5_1(
+    launch_mmq_gguf_q5_1(
         tmp_fixup: *mut c_void,
         x: *const c_void,
         y: *const c_void,
@@ -534,7 +526,7 @@ extern "C" {
         warp_size: i32,
         stream: *mut c_void,
     );
-    pub fn launch_mmq_gguf_q8_0(
+    launch_mmq_gguf_q8_0(
         tmp_fixup: *mut c_void,
         x: *const c_void,
         y: *const c_void,
@@ -550,7 +542,7 @@ extern "C" {
         warp_size: i32,
         stream: *mut c_void,
     );
-    pub fn launch_mmq_gguf_q2_k(
+    launch_mmq_gguf_q2_k(
         tmp_fixup: *mut c_void,
         x: *const c_void,
         y: *const c_void,
@@ -566,7 +558,7 @@ extern "C" {
         warp_size: i32,
         stream: *mut c_void,
     );
-    pub fn launch_mmq_gguf_q3_k(
+    launch_mmq_gguf_q3_k(
         tmp_fixup: *mut c_void,
         x: *const c_void,
         y: *const c_void,
@@ -582,7 +574,7 @@ extern "C" {
         warp_size: i32,
         stream: *mut c_void,
     );
-    pub fn launch_mmq_gguf_q4_k(
+    launch_mmq_gguf_q4_k(
         tmp_fixup: *mut c_void,
         x: *const c_void,
         y: *const c_void,
@@ -598,7 +590,7 @@ extern "C" {
         warp_size: i32,
         stream: *mut c_void,
     );
-    pub fn launch_mmq_gguf_q5_k(
+    launch_mmq_gguf_q5_k(
         tmp_fixup: *mut c_void,
         x: *const c_void,
         y: *const c_void,
@@ -614,7 +606,7 @@ extern "C" {
         warp_size: i32,
         stream: *mut c_void,
     );
-    pub fn launch_mmq_gguf_q6_k(
+    launch_mmq_gguf_q6_k(
         tmp_fixup: *mut c_void,
         x: *const c_void,
         y: *const c_void,

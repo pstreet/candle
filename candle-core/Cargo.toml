@@ -58,7 +58,7 @@ cuda = ["cudarc", "dep:candle-kernels", "candle-ug?/cuda"]
 # dynamic-loading mode so the binary starts with no ROCm installed - GPU use
 # stays gated on the is_culib_present() probes. Single-vendor `rocm` keeps
 # dynamic-linking (production behavior).
-"cuda+rocm" = ["cuda", "rocm", "dep:candle-kernels-cuda", "cudarc-hip/dynamic-loading"]
+"cuda+rocm" = ["cuda", "rocm", "dep:candle-kernels-cuda", "cudarc-hip/dynamic-loading", "candle-kernels/hip-plugin"]
 rocm = [
     "dep:cudarc-hip",
     "dep:candle-kernels",

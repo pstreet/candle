@@ -98,3 +98,9 @@ mdl!(UNARY, Unary);
 // loudly at link time instead of silently misbehaving.
 #[path = "../../candle-kernels/src/ffi.rs"]
 pub mod ffi;
+
+// The declaration macro travels with ffi.rs (same single-source rule);
+// the dual branch strips out here (this crate never sets hip-plugin),
+// leaving plain extern declarations exactly as before.
+#[path = "../../candle-kernels/src/kernel_decl.rs"]
+mod kernel_decl;

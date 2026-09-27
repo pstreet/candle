@@ -215,9 +215,11 @@ export CANDLE_MANAGED_WEIGHTS=1
 every build shape. In the dual shape the AMD side is the serving role (the
 llama.cpp-derived C kernels are hipcc-built; `Device::Hip`/`Storage::Hip`
 carry the role) and the NVIDIA side is compiled in for interop with every
-driver call gated on the `is_culib_present()` probe - cudarc uses the
-dynamic-loading mode, so the binary starts and serves with no NVIDIA runtime
-on the machine at all. A `cuda`-only build is not maintained in this fork.
+driver call gated on the `is_culib_present()` probe. Both vendors
+runtime-load: drivers via dlopen, the hipcc kernel set as a companion
+library (`libmoe_hip.so`), so the binary starts and serves on machines
+with no GPU runtimes installed at all. A `cuda`-only build is not
+maintained in this fork.
 
 Building the NVIDIA half needs the CUDA toolkit even without an NVIDIA GPU.
 Point the env at the toolkit and pin the compute capability (the default

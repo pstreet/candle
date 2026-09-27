@@ -980,6 +980,8 @@ impl Storage {
         match (self, dst) {
             (Self::Cpu(src), Self::Cpu(dst)) => src.copy_strided_src(dst, dst_offset, src_l),
             (Self::Cuda(src), Self::Cuda(dst)) => Ok(src.copy_strided_src(dst, dst_offset, src_l)?),
+            #[cfg(all(feature = "cuda", feature = "rocm"))]
+            (Self::Hip(src), Self::Hip(dst)) => Ok(src.copy_strided_src(dst, dst_offset, src_l)?),
             (Self::Metal(src), Self::Metal(dst)) => {
                 Ok(src.copy_strided_src(dst, dst_offset, src_l)?)
             }

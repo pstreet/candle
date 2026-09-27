@@ -265,8 +265,34 @@ fn build_rocm_ffis(out_dir: &PathBuf, rocm: &PathBuf, arch: &str) {
     }
     run(&ar_args, "llvm-ar archive of libmoe.a");
 
+    // Hot-pluggable dual builds (hip-plugin feature): link the same objects
+    // into a companion shared library instead of pulling the static archive
+    // into the exe. The .so carries its own amdhip64 DT_NEEDED (graceful
+    // dlopen failure when ROCm is absent). Single-vendor rocm keeps static.
+    if env::var("CARGO_FEATURE_HIP_PLUGIN").is_ok() {
+        let so = out_dir.join("libmoe_hip.so");
+        if so.exists() {
+            std::fs::remove_file(&so).expect("remove stale libmoe_hip.so");
+        }
+        let mut so_args: Vec<String> = vec![
+            rocm.join("bin/hipcc").display().to_string(),
+            "--shared".to_string(),
+            "-o".to_string(),
+            so.display().to_string(),
+        ];
+        for o in &objects {
+            so_args.push(o.display().to_string());
+        }
+        so_args.push(format!("-L{}/lib", rocm.display()));
+        so_args.push("-lamdhip64".to_string());
+        run(&so_args, "hipcc link of libmoe_hip.so");
+        println!("cargo:rustc-env=CANDLE_MOE_HIP_PLUGIN={}", so.display());
+    }
+
     println!("cargo:rustc-link-search={}", out_dir.display());
-    println!("cargo:rustc-link-lib=moe");
+    if env::var("CARGO_FEATURE_HIP_PLUGIN").is_err() {
+        println!("cargo:rustc-link-lib=moe");
+    }
     println!("cargo:rustc-link-lib=stdc++");
 }
 

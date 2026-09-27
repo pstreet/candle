@@ -2,6 +2,10 @@ mod ptx {
     include!(concat!(env!("OUT_DIR"), "/ptx.rs"));
 }
 
+#[cfg(feature = "hip-plugin")]
+mod hip_plugin;
+mod kernel_decl;
+
 #[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Id {
