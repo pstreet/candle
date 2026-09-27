@@ -176,6 +176,14 @@ pub unsafe fn culib() -> &'static ::libloading::Library {
     }
 }
 
+/// Link-mode probe: the runtime is a hard load-time dependency, so a
+/// running process implies its presence. Callers gate driver access
+/// uniformly across both binding modes without caring which is active.
+#[cfg(not(feature = "dynamic-loading"))]
+pub unsafe fn is_culib_present() -> bool {
+    true
+}
+
 #[cfg(feature = "dynamic-loading")]
 /// Mirrors `cudarc::driver::sys::is_culib_present`: check for the HIP runtime
 /// so a caller can gate GPU-backend selection on a machine with no ROCm
