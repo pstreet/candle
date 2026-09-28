@@ -524,6 +524,26 @@ impl<C: InplaceOp1> InplaceOpN<0> for C {
     forward_op1!(cpu_fwd, cpu_fwd_aliased, CpuStorage);
     forward_op1!(cuda_fwd, cuda_fwd_aliased, CudaStorage);
     forward_op1!(metal_fwd, metal_fwd_aliased, MetalStorage);
+
+    #[cfg(all(feature = "cuda", feature = "rocm"))]
+    fn hip_fwd(
+        &self,
+        dst: &mut HipStorage,
+        dl: &Layout,
+        _: [(&HipStorage, &Layout); 0],
+    ) -> Result<()> {
+        InplaceOp1::hip_fwd(self, dst, dl)
+    }
+
+    #[cfg(all(feature = "cuda", feature = "rocm"))]
+    fn hip_fwd_aliased(
+        &self,
+        dst: &mut HipStorage,
+        dl: &Layout,
+        _: [(Src<'_, HipStorage>, &Layout); 0],
+    ) -> Result<()> {
+        InplaceOp1::hip_fwd(self, dst, dl)
+    }
 }
 
 macro_rules! forward_op2 {
@@ -563,6 +583,33 @@ impl<C: InplaceOp2> InplaceOpN<1> for C {
     forward_op2!(cpu_fwd, cpu_fwd_aliased, CpuStorage);
     forward_op2!(cuda_fwd, cuda_fwd_aliased, CudaStorage);
     forward_op2!(metal_fwd, metal_fwd_aliased, MetalStorage);
+
+    #[cfg(all(feature = "cuda", feature = "rocm"))]
+    fn hip_fwd(
+        &self,
+        dst: &mut HipStorage,
+        dl: &Layout,
+        srcs: [(&HipStorage, &Layout); 1],
+    ) -> Result<()> {
+        let [(s, sl)] = srcs;
+        InplaceOp2::hip_fwd(self, dst, dl, s, sl)
+    }
+
+    #[cfg(all(feature = "cuda", feature = "rocm"))]
+    fn hip_fwd_aliased(
+        &self,
+        dst: &mut HipStorage,
+        dl: &Layout,
+        srcs: [(Src<'_, HipStorage>, &Layout); 1],
+    ) -> Result<()> {
+        match srcs {
+            [(Src::Distinct(s), sl)] => InplaceOp2::hip_fwd(self, dst, dl, s, sl),
+            _ => bail!(
+                "{}: aliased input requires migrating to InplaceOpN",
+                self.name()
+            ),
+        }
+    }
 }
 
 pub trait InplaceOp2 {
@@ -661,6 +708,35 @@ impl<C: InplaceOp3> InplaceOpN<2> for C {
     forward_op3!(cpu_fwd, cpu_fwd_aliased, CpuStorage);
     forward_op3!(cuda_fwd, cuda_fwd_aliased, CudaStorage);
     forward_op3!(metal_fwd, metal_fwd_aliased, MetalStorage);
+
+    #[cfg(all(feature = "cuda", feature = "rocm"))]
+    fn hip_fwd(
+        &self,
+        dst: &mut HipStorage,
+        dl: &Layout,
+        srcs: [(&HipStorage, &Layout); 2],
+    ) -> Result<()> {
+        let [(s1, l1), (s2, l2)] = srcs;
+        InplaceOp3::hip_fwd(self, dst, dl, s1, l1, s2, l2)
+    }
+
+    #[cfg(all(feature = "cuda", feature = "rocm"))]
+    fn hip_fwd_aliased(
+        &self,
+        dst: &mut HipStorage,
+        dl: &Layout,
+        srcs: [(Src<'_, HipStorage>, &Layout); 2],
+    ) -> Result<()> {
+        match srcs {
+            [(Src::Distinct(s1), l1), (Src::Distinct(s2), l2)] => {
+                InplaceOp3::hip_fwd(self, dst, dl, s1, l1, s2, l2)
+            }
+            _ => bail!(
+                "{}: aliased input requires migrating to InplaceOpN",
+                self.name()
+            ),
+        }
+    }
 }
 
 pub trait InplaceOp3 {

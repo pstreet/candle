@@ -670,6 +670,11 @@ mod tests {
     #[cfg(any(feature = "cuda", feature = "rocm"))]
     #[test]
     fn managed_safetensors_upload_matches_copy() -> Result<()> {
+        // Serving-role device: hip in dual builds (where the roles are
+        // distinct variants), the Cuda role otherwise.
+        #[cfg(all(feature = "cuda", feature = "rocm"))]
+        let dev = Device::new_hip(0)?;
+        #[cfg(not(all(feature = "cuda", feature = "rocm")))]
         let dev = Device::new_cuda(0)?;
         let f32_vals: Vec<f32> = (0..64).map(|v| v as f32 * 0.5).collect();
         let f16_vals: Vec<half::f16> = (0..32)
