@@ -107,6 +107,55 @@ mod cuda {
     }
 }
 
+#[cfg(all(feature = "cuda", feature = "rocm"))]
+mod hip {
+    use super::*;
+    use crate::hip_backend::cudarc::driver::{
+        CudaSlice, DeviceRepr, LaunchConfig, PushKernelArg, ValidAsZeroBits,
+    };
+    use crate::hip_backend::CudaDevice;
+    use crate::hip_backend::{kernel_name, kernels, CudaStorageSlice as S, WrapErr};
+    use crate::WithDType;
+
+    impl crate::hip_backend::Map1Any for ArgSort {
+        fn f<T: DeviceRepr + WithDType + ValidAsZeroBits, W: Fn(CudaSlice<T>) -> S>(
+            &self,
+            src: &CudaSlice<T>,
+            dev: &CudaDevice,
+            layout: &crate::Layout,
+            _wrap: W,
+        ) -> Result<S> {
+            let slice = match layout.contiguous_offsets() {
+                None => crate::bail!("input has to be contiguous"),
+                Some((o1, o2)) => src.slice(o1..o2),
+            };
+            let elem_count = layout.shape().elem_count();
+            let dst = unsafe { dev.alloc::<u32>(elem_count)? };
+            let func = if self.asc {
+                dev.get_or_load_func(&kernel_name::<T>("asort_asc"), &kernels::SORT)?
+            } else {
+                dev.get_or_load_func(&kernel_name::<T>("asort_desc"), &kernels::SORT)?
+            };
+            let ncols = self.last_dim;
+            let nrows = elem_count / ncols;
+            let ncols_pad = next_power_of_2(ncols);
+            // Limit block dim to 1024 threads, which is the maximum on modern CUDA gpus.
+            let block_dim = ncols_pad.min(1024);
+            let cfg = LaunchConfig {
+                grid_dim: (nrows as u32, 1, 1),
+                block_dim: (block_dim as u32, 1, 1),
+                shared_mem_bytes: (ncols_pad * std::mem::size_of::<u32>()) as u32,
+            };
+            let mut builder = func.builder();
+            let ncols = ncols as i32;
+            let ncols_pad = ncols_pad as i32;
+            builder.arg(&slice).arg(&dst).arg(&ncols).arg(&ncols_pad);
+            unsafe { builder.launch(cfg) }.w()?;
+            Ok(S::U32(dst))
+        }
+    }
+}
+
 impl crate::CustomOp1 for ArgSort {
     fn name(&self) -> &'static str {
         "argsort"
@@ -163,6 +212,23 @@ impl crate::CustomOp1 for ArgSort {
         let dev = storage.device();
         let slice = self.map(&storage.slice, dev, layout)?;
         let dst = crate::cuda_backend::CudaStorage {
+            slice,
+            device: dev.clone(),
+        };
+        Ok((dst, layout.shape().clone()))
+    }
+
+    #[cfg(all(feature = "cuda", feature = "rocm"))]
+    fn hip_fwd(
+        &self,
+        storage: &crate::HipStorage,
+        layout: &crate::Layout,
+    ) -> Result<(crate::HipStorage, crate::Shape)> {
+        use crate::backend::BackendStorage;
+        use crate::hip_backend::Map1Any;
+        let dev = storage.device();
+        let slice = self.map(&storage.slice, dev, layout)?;
+        let dst = crate::HipStorage {
             slice,
             device: dev.clone(),
         };
@@ -294,5 +360,96 @@ impl Tensor {
         let asort = self.arg_sort_last_dim(asc)?;
         let sorted = self.gather(&asort, crate::D::Minus1)?;
         Ok((sorted, asort))
+    }
+}
+
+#[cfg(all(test, feature = "cuda", feature = "rocm"))]
+mod hip_tests {
+    use super::*;
+    use crate::{DType, Device};
+
+    #[test]
+    fn hip_argsort_matches_cpu() -> Result<()> {
+        let hip = Device::new_hip(0)?;
+        let data: Vec<f32> = vec![3.0, 1.0, 4.0, 1.5, 9.0, 2.0, 6.0, 5.0];
+        let cpu = Tensor::from_vec(data.clone(), (2, 4), &Device::Cpu)?;
+        for asc in [true, false] {
+            let expected = cpu.arg_sort_last_dim(asc)?.to_vec2::<u32>()?;
+            let got = cpu
+                .to_device(&hip)?
+                .arg_sort_last_dim(asc)?
+                .to_device(&Device::Cpu)?
+                .to_vec2::<u32>()?;
+            assert_eq!(got, expected, "asc={asc}");
+            let (sorted_cpu, _) = cpu.sort_last_dim(asc)?;
+            let (sorted_hip, _) = cpu.to_device(&hip)?.sort_last_dim(asc)?;
+            let sorted_hip = sorted_hip.to_device(&Device::Cpu)?;
+            assert_eq!(
+                sorted_hip.to_vec2::<f32>()?,
+                sorted_cpu.to_vec2::<f32>()?,
+                "sorted asc={asc}"
+            );
+        }
+        let bf = Tensor::from_vec(data, (2, 4), &Device::Cpu)?.to_dtype(DType::BF16)?;
+        for asc in [true, false] {
+            let expected = bf.arg_sort_last_dim(asc)?.to_vec2::<u32>()?;
+            let got = bf
+                .to_device(&hip)?
+                .arg_sort_last_dim(asc)?
+                .to_device(&Device::Cpu)?
+                .to_vec2::<u32>()?;
+            assert_eq!(got, expected, "bf16 asc={asc}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn hip_argsort_wide_rows_match_cpu() -> Result<()> {
+        // MoE-router scale: hundreds of experts per token (512 for
+        // Qwen3.6-35B) hit the block-wide bitonic sort, not the small-row
+        // fast case.
+        let hip = Device::new_hip(0)?;
+        for ncols in [64usize, 256, 512, 576] {
+            let rows = 8usize;
+            // bf16 has an 8-bit mantissa, so uniform grids alias into heavy
+            // ties (an unstable sort may then legally differ from CPU).
+            // Use odd mantissas across ascending octaves: exact in bf16 and
+            // pairwise distinct within each row (period 6*96 = 576).
+            let data: Vec<f32> = (0..rows * ncols)
+                .map(|i| {
+                    let mant = (i % 6) as f32 * 2.0 + 1.0;
+                    let exp = ((i / 6) % 96 + 3) as i32;
+                    mant * 2f32.powi(exp)
+                })
+                .collect();
+            let cpu = Tensor::from_vec(data.clone(), (rows, ncols), &Device::Cpu)?;
+            let on_hip = cpu.to_device(&hip)?;
+            for asc in [true, false] {
+                let expected = cpu.arg_sort_last_dim(asc)?.to_vec2::<u32>()?;
+                let got = on_hip
+                    .arg_sort_last_dim(asc)?
+                    .to_device(&Device::Cpu)?
+                    .to_vec2::<u32>()?;
+                assert_eq!(got, expected, "f32 ncols={ncols} asc={asc}");
+                let (sorted_cpu, _) = cpu.sort_last_dim(asc)?;
+                let sorted_hip = on_hip.sort_last_dim(asc)?.0.to_device(&Device::Cpu)?;
+                assert_eq!(
+                    sorted_hip.to_vec2::<f32>()?,
+                    sorted_cpu.to_vec2::<f32>()?,
+                    "f32 sorted ncols={ncols} asc={asc}"
+                );
+            }
+            let bf = cpu.to_dtype(DType::BF16)?;
+            let bf_hip = on_hip.to_dtype(DType::BF16)?;
+            for asc in [true, false] {
+                let expected = bf.arg_sort_last_dim(asc)?.to_vec2::<u32>()?;
+                let got = bf_hip
+                    .arg_sort_last_dim(asc)?
+                    .to_device(&Device::Cpu)?
+                    .to_vec2::<u32>()?;
+                assert_eq!(got, expected, "bf16 ncols={ncols} asc={asc}");
+            }
+        }
+        Ok(())
     }
 }
