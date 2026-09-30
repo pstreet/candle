@@ -1,6 +1,6 @@
+use super::{cudarc, kernels};
 use crate::backend::{BackendDevice, BackendStorage};
 use crate::{CpuStorage, CpuStorageRef, DType, Layout, Result, Shape};
-use super::{cudarc, kernels};
 use cudarc::driver::CudaFunction;
 use float8::F8E4M3;
 use half::{bf16, f16};
@@ -27,7 +27,7 @@ impl DeviceId {
 struct CudaRng(cudarc::curand::CudaRng);
 unsafe impl Send for CudaRng {}
 
-    gpu_fork_lt! {
+gpu_fork_lt! {
 /// hipBLASLt handle with a persistent workspace. Used for large-batch F16 GEMMs, where the
 /// per-call heuristic algo selection beats the plain hipBLAS default on RDNA.
 pub struct CudaBlasLt {
@@ -96,8 +96,6 @@ gpu_fork_lt_stub! {
         Ok(Arc::new(CudaBlasLt))
     }
 }
-
-
 
 const CUDA_GRAPH_HTOD_CACHE_MAX_BYTES: usize = 4096;
 
@@ -176,7 +174,6 @@ impl CudaDevice {
     }
     }
 
-
     gpu_fork_managed! {
     /// Typed managed upload for plain safetensors weights: host-visible memory
     /// filled from the host, then prefetched to the device. No padding, unlike
@@ -188,7 +185,6 @@ impl CudaDevice {
         self.stream.clone_htod_managed_typed(src).w()
     }
     }
-
 
     gpu_fork_managed! {
     /// Managed variant of the trait's `storage_from_slice`, for safetensors
@@ -254,7 +250,6 @@ impl CudaDevice {
     }
     }
 
-
     pub fn enable_cuda_graph_htod_cache(&self) -> CudaGraphHtodCacheGuard {
         CUDA_GRAPH_HTOD_CACHE_DEPTH.with(|depth| depth.set(depth.get() + 1));
         CudaGraphHtodCacheGuard
@@ -319,7 +314,6 @@ impl CudaDevice {
         Ok(())
     }
     }
-
 
     pub fn memcpy_htod<
         T: cudarc::driver::DeviceRepr + 'static,

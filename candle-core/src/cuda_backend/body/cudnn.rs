@@ -1,5 +1,5 @@
-use crate::WithDType;
 use super::cudarc;
+use crate::WithDType;
 use cudarc::cudnn::safe::{ConvForward, Cudnn};
 use cudarc::driver::{CudaSlice, CudaView, DeviceRepr, ValidAsZeroBits};
 use std::cell::RefCell;

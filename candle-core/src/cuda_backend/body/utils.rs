@@ -1,6 +1,6 @@
+use super::cudarc;
 /// Helper functions to plug cuda kernels in candle.
 use crate::{Layout, Result, WithDType};
-use super::cudarc;
 use cudarc::driver::{CudaSlice, DeviceRepr, ValidAsZeroBits};
 
 use super::{CudaDevice, CudaError, WrapErr};

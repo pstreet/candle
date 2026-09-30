@@ -133,7 +133,7 @@ impl candle::CustomOp1 for Sigmoid {
         };
         Ok((dst, layout.shape().clone()))
     }
-#[cfg(all(feature = "cuda", feature = "rocm"))]
+    #[cfg(all(feature = "cuda", feature = "rocm"))]
     /// Dual-role twin of cuda_fwd: the same JIT kernels through the
     /// hip role's bindings (companion-plugin FFI included).
     fn hip_fwd(
@@ -145,9 +145,9 @@ impl candle::CustomOp1 for Sigmoid {
         use candle::hip_backend::cudarc::driver::{
             CudaSlice, DeviceRepr, LaunchConfig, PushKernelArg, ValidAsZeroBits,
         };
+        use candle::hip_backend::CudaDevice;
         use candle::hip_backend::SlicePtrOrNull;
         use candle::hip_backend::{kernel_name, kernels, Map1, WrapErr};
-        use candle::hip_backend::CudaDevice;
         use candle::WithDType;
 
         struct S;
@@ -439,7 +439,7 @@ impl candle::CustomOp1 for SoftmaxLastDim {
         };
         Ok((dst, layout.shape().clone()))
     }
-#[cfg(all(feature = "cuda", feature = "rocm"))]
+    #[cfg(all(feature = "cuda", feature = "rocm"))]
     /// Dual-role twin of cuda_fwd: the same JIT kernels through the
     /// hip role's bindings (companion-plugin FFI included).
     fn hip_fwd(
@@ -450,8 +450,8 @@ impl candle::CustomOp1 for SoftmaxLastDim {
         use candle::hip_backend::cudarc::driver::{
             CudaSlice, DeviceRepr, LaunchConfig, PushKernelArg,
         };
-        use candle::hip_backend::{kernel_name, kernels, Map1, WrapErr};
         use candle::hip_backend::CudaDevice;
+        use candle::hip_backend::{kernel_name, kernels, Map1, WrapErr};
         use candle::WithDType;
 
         struct S;
@@ -719,7 +719,7 @@ impl candle::CustomOp2 for RmsNorm {
         };
         Ok((dst, l1.shape().clone()))
     }
-#[cfg(all(feature = "cuda", feature = "rocm"))]
+    #[cfg(all(feature = "cuda", feature = "rocm"))]
     /// Dual-role twin of cuda_fwd: the same JIT kernels through the
     /// hip role's bindings (companion-plugin FFI included).
     fn hip_fwd(
@@ -732,8 +732,8 @@ impl candle::CustomOp2 for RmsNorm {
         use candle::hip_backend::cudarc::driver::{
             CudaSlice, DeviceRepr, LaunchConfig, PushKernelArg,
         };
-        use candle::hip_backend::{kernel_name, kernels, Map2, WrapErr};
         use candle::hip_backend::CudaDevice;
+        use candle::hip_backend::{kernel_name, kernels, Map2, WrapErr};
         use candle::WithDType;
 
         struct S {
@@ -1035,7 +1035,7 @@ impl candle::CustomOp3 for LayerNorm {
         };
         Ok((dst, l1.shape().clone()))
     }
-#[cfg(all(feature = "cuda", feature = "rocm"))]
+    #[cfg(all(feature = "cuda", feature = "rocm"))]
     /// Dual-role twin of cuda_fwd: the same JIT kernels through the
     /// hip role's bindings (companion-plugin FFI included).
     fn hip_fwd(
@@ -1050,8 +1050,8 @@ impl candle::CustomOp3 for LayerNorm {
         use candle::hip_backend::cudarc::driver::{
             CudaSlice, DeviceRepr, LaunchConfig, PushKernelArg,
         };
-        use candle::hip_backend::{kernel_name, kernels, Map3, WrapErr};
         use candle::hip_backend::CudaDevice;
+        use candle::hip_backend::{kernel_name, kernels, Map3, WrapErr};
         use candle::WithDType;
 
         struct S {

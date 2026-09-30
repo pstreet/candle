@@ -2879,7 +2879,6 @@ unsafe fn gemm_strided_batched_f16_lt(
 }
 }
 
-
 unsafe fn gemm_strided_batched_bf16(
     cublas: &cudarc::cublas::CudaBlas,
     cfg: StridedBatchedConfig<bf16>,
