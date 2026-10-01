@@ -34,6 +34,14 @@ macro_rules! gpu_fork_managed {
     };
 }
 
+/// AMD role: kernels reach the driver as the embedded binary image, not
+/// PTX source (the hipcc path has no PTX text to JIT).
+macro_rules! gpu_ptx_load {
+    ($mdl:expr) => {
+        cudarc::nvrtc::Ptx::from_binary($mdl.ptx_bytes().to_vec())
+    };
+}
+
 /// AMD role: devices report the `Hip` location variant (per-API index, so
 /// `hip:0` and `cuda:0` may address the same card).
 macro_rules! gpu_backend_location {

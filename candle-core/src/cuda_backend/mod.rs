@@ -35,6 +35,32 @@ macro_rules! gpu_fork_graphs {
 // that fork API) drops them. The dropped functionality is exactly the
 // BackendCaps degradation: that role serves GEMMs through the plain path
 // and exposes no graph-capture methods until the fork API is ported.
+/// PTX loading for the shared body, role-keyed. PTX text must reach
+/// cuModuleLoadData NUL-terminated (Ptx::from -> Src -> CString); the HIP
+/// path consumes the embedded binary image instead. Dual builds serve the
+/// NVIDIA role in this module, so they load the twin's PTX as source like
+/// cuda-only; the single-rocm alias (this module IS the hip backend there)
+/// loads binary. A shared cfg(feature="rocm") keyed the old choice, which
+/// fed raw PTX bytes as a binary image on the dual NVIDIA role and read
+/// past the unterminated string into garbage (CUDA_ERROR_INVALID_PTX).
+#[cfg(all(feature = "cuda", feature = "rocm"))]
+macro_rules! gpu_ptx_load {
+    ($mdl:expr) => {
+        cudarc::nvrtc::Ptx::from($mdl.ptx())
+    };
+}
+#[cfg(all(feature = "rocm", not(feature = "cuda")))]
+macro_rules! gpu_ptx_load {
+    ($mdl:expr) => {
+        cudarc::nvrtc::Ptx::from_binary($mdl.ptx_bytes().to_vec())
+    };
+}
+#[cfg(all(feature = "cuda", not(feature = "rocm")))]
+macro_rules! gpu_ptx_load {
+    ($mdl:expr) => {
+        cudarc::nvrtc::Ptx::from($mdl.ptx())
+    };
+}
 /// Fork hipBLASLt fast-path API: present - expand to the input tokens.
 #[cfg(not(all(feature = "cuda", feature = "rocm")))]
 macro_rules! gpu_fork_lt {
