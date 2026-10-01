@@ -60,7 +60,7 @@ cudarc = { version = "0.19.8", features = [
     "f8",
     "f16",
     "cuda-version-from-build-system",
-    # Runtime dlopen (RTLD_LOCAL) instead of link-time deps: a cuda+rocm
+    # Runtime dlopen (RTLD_LOCAL) instead of link-time deps: any GPU-enabled
     # binary starts on machines with no NVIDIA runtime at all, and NVIDIA
     # access is gated on cudarc::driver::sys::is_culib_present() - the probe
     # must run before any driver call or cudarc panics on the missing lib.

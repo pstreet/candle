@@ -35,9 +35,8 @@ default = []
 accelerate = ["dep:accelerate-src", "candle/accelerate"]
 cuda = ["candle/cuda"]
 rocm = ["candle/rocm"]
-# Multi-vendor: forward the unified feature so standalone dual checks resolve
-# the same shape the mistral.rs workspace builds (candle/cuda+rocm).
-"cuda+rocm" = ["cuda", "rocm", "candle/cuda+rocm"]
+# Multi-vendor is just both features together (`--features cuda,rocm`); each
+# forwards its own half, so combinations need no forwarding feature.
     cudnn = ["candle/cudnn"]
 mkl = ["dep:intel-mkl-src", "candle/mkl"]
 metal = ["candle/metal", "dep:candle-metal-kernels", "dep:objc2-metal"]

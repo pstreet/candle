@@ -147,19 +147,15 @@ extern crate accelerate_src;
 //   PTX), `hip_backend` is the AMD role (`cudarc-hip`, hipcc-built
 //   `candle-kernels`). NVIDIA driver access is runtime dlopen and must be
 //   gated on `cudarc::driver::sys::is_culib_present()`.
-// - plain `cuda` + `rocm` together is still rejected: opt into `cuda+rocm`
-//   explicitly so the feature set is unambiguous.
-#[cfg(all(feature = "cuda", feature = "rocm", not(feature = "cuda+rocm")))]
-compile_error!(
-    "building with both `cuda` and `rocm` requires the multi-vendor feature: \
-     use `--features cuda+rocm` (both backends in one binary) or build one \
-     backend per binary."
-);
+// - `cuda` + `rocm` together IS the multi-vendor build; enable both with
+//   plain comma syntax (`--features cuda,rocm`). There is no compound
+//   feature: combination-keyed code uses all(feature = "cuda",
+//   feature = "rocm") throughout.
 
 // Under plain `rocm`, `cudarc-hip` (`cudarc_hip`) re-implements the `cudarc`
 // surface over HIP; alias it so the single-vendor GPU backend needs no source
-// changes. In a `cuda+rocm` build the name `cudarc` is the real NVIDIA crate
-// and the AMD role binds it per-module instead (see `hip_backend`).
+// changes. In a multi-vendor (`cuda,rocm`) build the name `cudarc` is the
+// real NVIDIA crate and the AMD role binds it per-module (see `hip_backend`).
 #[cfg(all(feature = "rocm", not(feature = "cuda")))]
 pub extern crate cudarc_hip as cudarc;
 // Under `cuda` (single or dual) the name `cudarc` is the real NVIDIA crate -

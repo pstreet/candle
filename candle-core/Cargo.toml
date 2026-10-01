@@ -51,18 +51,25 @@ half = { workspace = true }
 
 [features]
 default = []
-cuda = ["cudarc", "dep:candle-kernels", "candle-ug?/cuda"]
-# Multi-vendor build: both backends in one binary. `cuda_backend` becomes the
-# NVIDIA role (real cudarc + the PTX twin crate), `hip_backend` the AMD role.
-# Both vendors resolve at runtime (hot-pluggable): cudarc-hip switches to its
-# dynamic-loading mode so the binary starts with no ROCm installed - GPU use
-# stays gated on the is_culib_present() probes. Single-vendor `rocm` keeps
-# dynamic-linking (production behavior).
-"cuda+rocm" = ["cuda", "rocm", "dep:candle-kernels-cuda", "cudarc-hip/dynamic-loading", "candle-kernels/hip-plugin"]
+# Combinations are plain feature sets: `--features cuda,rocm` is the
+# multi-vendor build (no compound feature). `cuda_backend` is then the
+# NVIDIA role (real cudarc + the PTX twin crate), `hip_backend` the AMD
+# role. The twin crate is attached to `cuda` itself for monotone-feature
+# reasons: in a cuda-only build it is compiled but unused (that shape
+# serves JIT kernels from `candle-kernels`), which is the accepted cost of
+# expressing AND-logic without a compound.
+cuda = ["cudarc", "dep:candle-kernels", "dep:candle-kernels-cuda", "candle-ug?/cuda"]
+# Every rocm build is portable: cudarc-hip dlopens the driver (the binary
+# starts with no ROCm installed; GPU use stays gated on the
+# is_culib_present() probes) and candle-kernels is consumed from the
+# dlopened companion .so instead of a static archive. Single-vendor rocm
+# used to link statically; the dual artifact's portability is now uniform.
 rocm = [
     "dep:cudarc-hip",
+    "cudarc-hip/dynamic-loading",
     "dep:candle-kernels",
     "candle-kernels/rocm",
+    "candle-kernels/hip-plugin",
 ]
 cudnn = ["cuda", "cudarc/cudnn"]
 nccl = ["cuda", "cudarc/nccl"]
