@@ -631,7 +631,17 @@ impl BackendDevice for CudaDevice {
 
     fn new(ordinal: usize) -> Result<Self> {
         let context = cudarc::driver::CudaContext::new(ordinal).w()?;
-        let stream = context.per_thread_stream();
+        // One dedicated stream per device, shared by every host thread.
+        // cuStreamPerThread (the upstream default here) resolves to a
+        // DIFFERENT physical stream per calling thread with no ordering
+        // between them, which is unsound under multi-threaded serving:
+        // tokio workers and rayon threads migrate mid-request, so an
+        // upload enqueued on one thread is unreadable garbage on another
+        // (observed as 0x01010101 position tensors -> index_select
+        // bounds asserts -> NaN logits -> poisoned context). A dedicated
+        // stream restores total order; the lost inter-thread concurrency
+        // was never sound without explicit events anyway.
+        let stream = context.new_stream().w()?;
         Self::from_context_and_stream(context, stream)
     }
 
