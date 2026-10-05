@@ -126,3 +126,7 @@ lto = false
 codegen-units = 32
 debug = 1
 incremental = true
+
+# Same fork as mistral.rs so standalone candle builds share the arena API.
+[patch.crates-io]
+cudarc = { path = "../cudarc-nvidia" }

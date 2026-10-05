@@ -22,10 +22,13 @@ macro_rules! gpu_fork_graphs {
         $($tokens)*
     };
 }
-/// Fork graph-capture arena API: absent - drop the input tokens.
+/// Fork graph-capture arena API: present via the cudarc-nvidia companion
+/// fork (ported from cudarc-hip) - expand to the input tokens.
 #[cfg(all(feature = "cuda", feature = "rocm"))]
 macro_rules! gpu_fork_graphs {
-    ($($tokens:tt)*) => {};
+    ($($tokens:tt)*) => {
+        $($tokens)*
+    };
 }
 // Per-role capability switches for the shared backend body. Both roles
 // compile the same feature set, so cfg cannot distinguish them; the role

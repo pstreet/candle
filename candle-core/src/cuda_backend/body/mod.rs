@@ -40,7 +40,15 @@ impl<T: DeviceRepr> SlicePtrOrNull<T> {
         match self {
             SlicePtrOrNull::Ptr(slice) => builder.arg(slice),
             SlicePtrOrNull::Cached(slice) => builder.arg(slice.as_ref()),
-            SlicePtrOrNull::Null => builder.arg(&0usize),
+            // Never pass a temporary here: the driver copies argument values
+            // at launch time, after this call returns, so a temporary's
+            // address dangles and the kernel reads recycled stack bytes as
+            // its dims pointer (silent wrong strides or a wild read,
+            // depending on what the slot gets reused for).
+            SlicePtrOrNull::Null => {
+                static NULL_DIMS: usize = 0;
+                builder.arg(&NULL_DIMS)
+            }
         };
     }
 }
