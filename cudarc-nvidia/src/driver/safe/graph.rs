@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use crate::driver::{result, sys};
 
-use super::{CudaStream, DriverError};
+use super::{core::CudaSlice, CudaStream, DriverError};
 
 /// Represents a replay-able Cuda Graph. Create with [CudaStream::begin_capture()] and [CudaStream::end_capture()].
 ///
@@ -43,7 +43,7 @@ impl Drop for CudaGraph {
 
 impl CudaStream {
     /// See [cuda docs](https://docs.nvidia.com/cuda/cuda-driver-api/group__CUDA__STREAM.html#group__CUDA__STREAM_1g767167da0bbf07157dc20b6c258a2143)
-    pub fn begin_capture(&self, mode: sys::CUstreamCaptureMode) -> Result<(), DriverError> {
+    pub fn begin_capture_with_mode(&self, mode: sys::CUstreamCaptureMode) -> Result<(), DriverError> {
         self.ctx.bind_to_thread()?;
         unsafe { result::stream::begin_capture(self.cu_stream, mode) }
     }
@@ -51,7 +51,7 @@ impl CudaStream {
     /// See [cuda docs](https://docs.nvidia.com/cuda/cuda-driver-api/group__CUDA__STREAM.html#group__CUDA__STREAM_1g03dab8b2ba76b00718955177a929970c)
     ///
     /// `flags` is passed to [cuGraphInstantiate](https://docs.nvidia.com/cuda/cuda-driver-api/group__CUDA__GRAPH.html#group__CUDA__GRAPH_1gb53b435e178cccfa37ac87285d2c3fa1)
-    pub fn end_capture(
+    pub fn end_capture_with_flags(
         self: &Arc<Self>,
         flags: sys::CUgraphInstantiate_flags,
     ) -> Result<Option<CudaGraph>, DriverError> {
@@ -113,5 +113,121 @@ impl CudaGraph {
     /// owned by the [CudaGraph].
     pub fn cu_graph_exec(&self) -> sys::CUgraphExec {
         self.cu_graph_exec
+    }
+}
+
+/// Template of captured work, produced by the fork-style
+/// [CudaStream::begin_capture] / [CudaStream::end_capture] pair. Ported from
+/// cudarc-hip: instantiate consumes the template, so each capture yields
+/// exactly one exec.
+pub struct CudaGraphTemplate {
+    graph: sys::CUgraph,
+    ctx: std::sync::Arc<super::core::CudaContext>,
+}
+
+impl CudaGraphTemplate {
+    /// Compile the captured work into an executable graph bound to `stream`.
+    /// Instantiated with flags 0: arena-captured graphs hold no mempool
+    /// nodes, so there is nothing for AUTO_FREE to manage. The template is
+    /// consumed and destroyed by this call.
+    pub fn instantiate(
+        self,
+        stream: std::sync::Arc<CudaStream>,
+        arena: Option<std::sync::Arc<CudaSlice<u8>>>,
+    ) -> Result<std::sync::Arc<CudaGraphExec>, DriverError> {
+        self.ctx.bind_to_thread()?;
+        let mut exec: sys::CUgraphExec = std::ptr::null_mut();
+        let code = unsafe {
+            sys::cuGraphInstantiateWithFlags(
+                &mut exec as *mut sys::CUgraphExec,
+                self.graph,
+                0,
+            )
+        };
+        let res: Result<(), super::DriverError> =
+            if code == sys::CUresult::CUDA_SUCCESS {
+                Ok(())
+            } else {
+                Err(super::DriverError(code))
+            };
+        let destroy_template = || unsafe {
+            let _ = result::graph::destroy(self.graph);
+        };
+        if let Err(e) = res {
+            self.ctx.bind_to_thread().ok();
+            destroy_template();
+            return Err(e);
+        }
+        self.ctx.bind_to_thread().ok();
+        destroy_template();
+        Ok(std::sync::Arc::new(CudaGraphExec {
+            exec,
+            stream,
+            ctx: self.ctx.clone(),
+            arena,
+        }))
+    }
+}
+
+/// An executable graph captured from a stream. Ported from cudarc-hip.
+pub struct CudaGraphExec {
+    exec: sys::CUgraphExec,
+    stream: std::sync::Arc<CudaStream>,
+    ctx: std::sync::Arc<super::core::CudaContext>,
+    /// Arena the captured allocations were carved out of (arena-capture
+    /// mode); must outlive every replay and is released when the last exec
+    /// handle drops.
+    arena: Option<std::sync::Arc<CudaSlice<u8>>>,
+}
+
+impl CudaGraphExec {
+    /// The stream this graph was captured from and is replayed on.
+    pub fn stream(&self) -> &std::sync::Arc<CudaStream> {
+        &self.stream
+    }
+
+    /// Launch the captured work on the owning stream.
+    pub fn launch(&self) -> Result<(), DriverError> {
+        self.ctx.bind_to_thread()?;
+        unsafe { result::graph::launch(self.exec, self.stream.cu_stream) }
+    }
+}
+
+impl Drop for CudaGraphExec {
+    fn drop(&mut self) {
+        self.ctx.bind_to_thread().ok();
+        unsafe {
+            let _ = result::graph::exec_destroy(self.exec);
+        }
+    }
+}
+
+impl CudaStream {
+    /// Begin capturing this stream into a graph (fork-style, no arena).
+    /// Prefer [CudaStream::begin_capture_arena] for graphs that replay.
+    pub fn begin_capture(&self) -> Result<(), DriverError> {
+        *self.ctx.capture_arena.lock().unwrap() = None;
+        self.ctx.capture_arena_offset.store(0, std::sync::atomic::Ordering::Relaxed);
+        self.begin_capture_common()
+    }
+
+    /// End the capture begun by [CudaStream::begin_capture] or
+    /// [CudaStream::begin_capture_arena], instantiating the captured work
+    /// into an executable graph bound to this stream.
+    pub fn end_capture(
+        self: &std::sync::Arc<Self>,
+    ) -> Result<std::sync::Arc<CudaGraphExec>, DriverError> {
+        if self.capturing.load(std::sync::atomic::Ordering::Relaxed) == 0 {
+            return Err(DriverError(sys::CUresult::CUDA_ERROR_INVALID_VALUE));
+        }
+        self.capturing.store(0, std::sync::atomic::Ordering::Relaxed);
+        self.ctx.bind_to_thread()?;
+        let graph: sys::CUgraph = unsafe { result::stream::end_capture(self.cu_stream) }?;
+        let arena = self.ctx.capture_arena.lock().unwrap().take();
+        let template = CudaGraphTemplate {
+            graph,
+            ctx: self.ctx.clone(),
+        };
+        template.instantiate(self.clone(), arena)
     }
 }

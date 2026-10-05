@@ -127,6 +127,8 @@ codegen-units = 32
 debug = 1
 incremental = true
 
-# Same fork as mistral.rs so standalone candle builds share the arena API.
+# Same fork pattern as cudarc-hip: vendored in-tree (see cudarc-nvidia),
+# upstream cudarc 0.19.8 plus the graph-capture arena and capture-aware
+# event guards ported from cudarc-hip.
 [patch.crates-io]
-cudarc = { path = "../cudarc-nvidia" }
+cudarc = { path = "./cudarc-nvidia" }

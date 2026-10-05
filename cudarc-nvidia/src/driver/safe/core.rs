@@ -10,6 +10,7 @@ use std::{
     string::String,
     sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering},
     sync::Arc,
+    sync::Mutex,
     vec::Vec,
 };
 
@@ -40,10 +41,62 @@ pub struct CudaContext {
     pub(crate) num_streams: AtomicUsize,
     pub(crate) event_tracking: AtomicBool,
     pub(crate) error_state: AtomicU32,
+    // Graph-capture arena (ported from cudarc-hip): while installed, stream
+    // allocations carve from the slab instead of creating mempool nodes.
+    pub(crate) capture_arena: Mutex<Option<Arc<CudaSlice<u8>>>>,
+    pub(crate) capture_arena_offset: AtomicUsize,
+    pub(crate) capture_arena_overflowed: AtomicBool,
+    pub(crate) capture_arena_alloc_count: AtomicU32,
+    pub(crate) alloc_bytes: AtomicUsize,
 }
 
 unsafe impl Send for CudaContext {}
 unsafe impl Sync for CudaContext {}
+
+impl CudaContext {
+    /// Bump-allocate `bytes` from the active capture arena (256-byte aligned).
+    /// Returns the device offset to add to the arena base, or `None` when no
+    /// arena is active. Errors only on overflow of the arena.
+    fn capture_arena_alloc(&self, bytes: usize) -> Result<Option<usize>, DriverError> {
+        let arena = self.capture_arena.lock().unwrap();
+        let arena = match &*arena {
+            Some(a) => a,
+            None => return Ok(None),
+        };
+        let need = (bytes + 255) & !255usize;
+        let offset = self.capture_arena_offset.fetch_add(need, Ordering::AcqRel);
+        if offset + need > arena.len() {
+            self.capture_arena_overflowed.store(true, Ordering::Release);
+            eprintln!(
+                "[cudarc] capture arena overflow: need={bytes} aligned={need} offset={offset} arena={} allocs={}",
+                arena.len(),
+                self.capture_arena_alloc_count.load(Ordering::Relaxed),
+            );
+            return Err(DriverError(sys::CUresult::CUDA_ERROR_OUT_OF_MEMORY));
+        }
+        self.capture_arena_alloc_count
+            .fetch_add(1, Ordering::Relaxed);
+        Ok(Some(offset as u64 as usize))
+    }
+
+    /// Running total of bytes handed out by stream allocation. Reset
+    /// between phases to size the capture arena from a dry run.
+    pub fn alloc_bytes(&self) -> usize {
+        self.alloc_bytes.load(Ordering::Acquire)
+    }
+
+    pub fn reset_alloc_bytes(&self) {
+        self.alloc_bytes.store(0, Ordering::Release);
+    }
+
+    fn capture_arena_base(&self) -> Result<sys::CUdeviceptr, DriverError> {
+        let arena = self.capture_arena.lock().unwrap();
+        match &*arena {
+            Some(a) => Ok(a.cu_device_ptr),
+            None => Err(DriverError(sys::CUresult::CUDA_ERROR_INVALID_VALUE)),
+        }
+    }
+}
 
 impl Drop for CudaContext {
     fn drop(&mut self) {
@@ -91,6 +144,11 @@ impl CudaContext {
             num_streams: AtomicUsize::new(0),
             event_tracking: AtomicBool::new(true),
             error_state: AtomicU32::new(0),
+            capture_arena: Mutex::new(None),
+            capture_arena_offset: AtomicUsize::new(0),
+            capture_arena_overflowed: AtomicBool::new(false),
+            capture_arena_alloc_count: AtomicU32::new(0),
+            alloc_bytes: AtomicUsize::new(0),
         });
         ctx.bind_to_thread()?;
         Ok(ctx)
@@ -163,6 +221,11 @@ impl CudaContext {
             num_streams: AtomicUsize::new(0),
             event_tracking: AtomicBool::new(true),
             error_state: AtomicU32::new(0),
+            capture_arena: Mutex::new(None),
+            capture_arena_offset: AtomicUsize::new(0),
+            capture_arena_overflowed: AtomicBool::new(false),
+            capture_arena_alloc_count: AtomicU32::new(0),
+            alloc_bytes: AtomicUsize::new(0),
         });
         ctx.bind_to_thread()?;
         Ok(ctx)
@@ -214,6 +277,11 @@ impl CudaContext {
             num_streams: AtomicUsize::new(0),
             event_tracking: AtomicBool::new(true),
             error_state: AtomicU32::new(0),
+            capture_arena: Mutex::new(None),
+            capture_arena_offset: AtomicUsize::new(0),
+            capture_arena_overflowed: AtomicBool::new(false),
+            capture_arena_alloc_count: AtomicU32::new(0),
+            alloc_bytes: AtomicUsize::new(0),
         });
         ctx.bind_to_thread()?;
         Ok(ctx)
@@ -251,6 +319,11 @@ impl CudaContext {
             num_streams: AtomicUsize::new(0),
             event_tracking: AtomicBool::new(true),
             error_state: AtomicU32::new(0),
+            capture_arena: Mutex::new(None),
+            capture_arena_offset: AtomicUsize::new(0),
+            capture_arena_overflowed: AtomicBool::new(false),
+            capture_arena_alloc_count: AtomicU32::new(0),
+            alloc_bytes: AtomicUsize::new(0),
         });
         ctx.bind_to_thread()?;
         Ok(ctx)
@@ -627,14 +700,23 @@ impl CudaEvent {
 /// See [6.6. Event Management](https://docs.nvidia.com/cuda/cuda-runtime-api/group__CUDART__EVENT.html)
 /// See [Out-of-order execution](https://en.wikipedia.org/wiki/Out-of-order_execution)
 /// See [Dependence analysis](https://en.wikipedia.org/wiki/Dependence_analysis)
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug)]
 pub struct CudaStream {
     pub(crate) cu_stream: sys::CUstream,
     pub(crate) ctx: Arc<CudaContext>,
+    // Nonzero while this stream is in a graph capture (local state).
+    pub(crate) capturing: AtomicUsize,
 }
 
 unsafe impl Send for CudaStream {}
 unsafe impl Sync for CudaStream {}
+
+impl PartialEq for CudaStream {
+    fn eq(&self, other: &Self) -> bool {
+        self.cu_stream == other.cu_stream && self.ctx == other.ctx
+    }
+}
+impl Eq for CudaStream {}
 
 impl Drop for CudaStream {
     fn drop(&mut self) {
@@ -655,6 +737,7 @@ impl CudaContext {
         Arc::new(CudaStream {
             cu_stream: std::ptr::null_mut(),
             ctx: self.clone(),
+            capturing: AtomicUsize::new(0),
         })
     }
 
@@ -664,6 +747,7 @@ impl CudaContext {
             // See https://docs.nvidia.com/cuda/cuda-runtime-api/group__CUDART__TYPES.html#group__CUDART__TYPES_1g7b7129befd6f52708309acafd1c46197
             cu_stream: 0x2 as _,
             ctx: self.clone(),
+            capturing: AtomicUsize::new(0),
         })
     }
 
@@ -681,6 +765,7 @@ impl CudaContext {
         Ok(Arc::new(CudaStream {
             cu_stream,
             ctx: self.clone(),
+            capturing: AtomicUsize::new(0),
         }))
     }
 
@@ -708,6 +793,7 @@ impl CudaContext {
         Ok(Arc::new(CudaStream {
             cu_stream,
             ctx: self.clone(),
+            capturing: AtomicUsize::new(0),
         }))
     }
 }
@@ -721,6 +807,7 @@ impl CudaStream {
         let stream = Arc::new(CudaStream {
             cu_stream,
             ctx: self.ctx.clone(),
+            capturing: AtomicUsize::new(0),
         });
         stream.join(self)?;
         Ok(stream)
@@ -791,6 +878,10 @@ pub struct CudaSlice<T> {
     pub(crate) read: Option<CudaEvent>,
     pub(crate) write: Option<CudaEvent>,
     pub(crate) stream: Arc<CudaStream>,
+    /// True for memory allocated during a graph capture: it is owned by the
+    /// graph (freed when the graph exec is destroyed), so the host drop is
+    /// a no-op. Ported from cudarc-hip.
+    pub(crate) graph_owned: bool,
     pub(crate) marker: PhantomData<*const T>,
 }
 
@@ -799,6 +890,11 @@ unsafe impl<T> Sync for CudaSlice<T> {}
 
 impl<T> Drop for CudaSlice<T> {
     fn drop(&mut self) {
+        // Memory allocated inside a graph capture is released with the graph;
+        // the host must not free it again.
+        if self.graph_owned {
+            return;
+        }
         let ctx = &self.stream.ctx;
         if let Some(read) = self.read.as_ref() {
             ctx.record_err(self.stream.wait(read));
@@ -1119,6 +1215,14 @@ pub enum SyncOnDrop<'a> {
 impl<'a> SyncOnDrop<'a> {
     /// Construct a [SyncOnDrop::Record] variant
     pub fn record_event(event: &'a Option<CudaEvent>, stream: &'a CudaStream) -> Self {
+        // Never record while event tracking is disabled: during graph
+        // capture the record would land on the capturing stream and bind
+        // the event to that capture ("Event is not valid ... related to a
+        // graph capture that is no longer running" on every later use),
+        // poisoning eagerly-created slices that outlive the graph.
+        if !stream.ctx.is_event_tracking() {
+            return SyncOnDrop::Record(None);
+        }
         SyncOnDrop::Record(event.as_ref().map(|e| (e, stream)))
     }
     /// Construct a [SyncOnDrop::Sync] variant
@@ -1506,6 +1610,69 @@ impl<T> HostSlice<T> for PinnedHostSlice<T> {
 }
 
 impl CudaStream {
+    /// True while this stream is in a graph capture (local, not driver, state).
+    pub fn is_capturing(&self) -> bool {
+        self.capturing.load(Ordering::Relaxed) != 0
+    }
+
+    /// Begin capturing this stream into a graph, drawing all capture-time
+    /// allocations from `arena` instead of creating mempool graph nodes.
+    /// Ported from cudarc-hip.
+    pub fn begin_capture_arena(&self, arena: Arc<CudaSlice<u8>>) -> Result<(), DriverError> {
+        *self.ctx.capture_arena.lock().unwrap() = Some(arena);
+        self.ctx.capture_arena_offset.store(0, Ordering::Relaxed);
+        self.ctx
+            .capture_arena_overflowed
+            .store(false, Ordering::Relaxed);
+        self.ctx
+            .capture_arena_alloc_count
+            .store(0, Ordering::Relaxed);
+        self.begin_capture_common()
+    }
+
+    /// Bump offset consumed from the active capture arena, for sizing it.
+    pub fn capture_arena_consumed(&self) -> usize {
+        self.ctx.capture_arena_offset.load(Ordering::Relaxed)
+    }
+
+    /// True while an arena pointer is installed on this stream's context.
+    pub fn capture_arena_active(&self) -> bool {
+        self.ctx.capture_arena.lock().unwrap().is_some()
+    }
+
+    /// True if a capture-time allocation overflowed the arena.
+    pub fn capture_arena_overflowed(&self) -> bool {
+        self.ctx.capture_arena_overflowed.load(Ordering::Relaxed)
+    }
+
+    /// Clear capture state after a discarded capture.
+    pub fn reset_capture_bookkeeping(&self) {
+        self.capturing.store(0, Ordering::Relaxed);
+        *self.ctx.capture_arena.lock().unwrap() = None;
+    }
+
+    pub(crate) fn begin_capture_common(&self) -> Result<(), DriverError> {
+        self.end_capture_abort_if_active()?;
+        self.ctx.bind_to_thread()?;
+        unsafe {
+            result::stream::begin_capture(
+                self.cu_stream,
+                sys::CUstreamCaptureMode::CU_STREAM_CAPTURE_MODE_GLOBAL,
+            )?;
+        }
+        self.capturing.store(1, Ordering::Relaxed);
+        Ok(())
+    }
+
+    fn end_capture_abort_if_active(&self) -> Result<(), DriverError> {
+        if self.capturing.load(Ordering::Relaxed) != 0 {
+            // A capture is in flight but we lost track of it; stop capturing so
+            // that a later end-capture does not return a stale graph.
+            self.capturing.store(0, Ordering::Relaxed);
+        }
+        Ok(())
+    }
+
     /// Allocates an empty [CudaSlice] with 0 length.
     pub fn null<T>(self: &Arc<Self>) -> Result<CudaSlice<T>, result::DriverError> {
         self.ctx.bind_to_thread()?;
@@ -1519,6 +1686,7 @@ impl CudaStream {
             len: 0,
             read: None,
             write: None,
+            graph_owned: false,
             stream: self.clone(),
             marker: PhantomData,
         })
@@ -1532,10 +1700,17 @@ impl CudaStream {
         len: usize,
     ) -> Result<CudaSlice<T>, DriverError> {
         self.ctx.bind_to_thread()?;
-        let cu_device_ptr = if self.ctx.has_async_alloc {
-            result::malloc_async(self.cu_stream, len * std::mem::size_of::<T>())?
+        let bytes = len * std::mem::size_of::<T>();
+        self.ctx.alloc_bytes.fetch_add(bytes, Ordering::Release);
+        let cu_device_ptr = if self.is_capturing() {
+            match self.ctx.capture_arena_alloc(bytes)? {
+                Some(offset) => self.ctx.capture_arena_base()? + offset as u64,
+                None => result::malloc_async(self.cu_stream, bytes)?,
+            }
+        } else if self.ctx.has_async_alloc {
+            result::malloc_async(self.cu_stream, bytes)?
         } else {
-            result::malloc_sync(len * std::mem::size_of::<T>())?
+            result::malloc_sync(bytes)?
         };
         let (read, write) = if self.ctx.is_event_tracking() {
             (
@@ -1550,6 +1725,7 @@ impl CudaStream {
             len,
             read,
             write,
+            graph_owned: self.is_capturing(),
             stream: self.clone(),
             marker: PhantomData,
         })
@@ -2511,6 +2687,7 @@ impl CudaStream {
             len,
             read,
             write,
+            graph_owned: true,
             stream: self.clone(),
             marker: PhantomData,
         }
