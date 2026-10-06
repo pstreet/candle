@@ -25,9 +25,9 @@ mod metal {
 }
 #[cfg(any(feature = "cuda", feature = "rocm"))]
 pub mod cuda;
-#[cfg(any(feature = "cuda", feature = "rocm"))]
+#[cfg(feature = "rocm")]
 pub mod fast_mmq;
-#[cfg(any(feature = "cuda", feature = "rocm"))]
+#[cfg(feature = "rocm")]
 pub mod fast_mmvq;
 #[cfg(all(feature = "cuda", feature = "rocm"))]
 pub mod hip;

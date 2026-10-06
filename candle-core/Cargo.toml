@@ -58,7 +58,7 @@ default = []
 # reasons: in a cuda-only build it is compiled but unused (that shape
 # serves JIT kernels from `candle-kernels`), which is the accepted cost of
 # expressing AND-logic without a compound.
-cuda = ["cudarc", "dep:candle-kernels", "dep:candle-kernels-cuda", "candle-ug?/cuda"]
+cuda = ["cudarc", "dep:candle-kernels-cuda", "candle-ug?/cuda"]
 # Every rocm build is portable: cudarc-hip dlopens the driver (the binary
 # starts with no ROCm installed; GPU use stays gated on the
 # is_culib_present() probes) and candle-kernels is consumed from the
