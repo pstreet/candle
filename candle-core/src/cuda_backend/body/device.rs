@@ -442,7 +442,13 @@ impl CudaDevice {
             cache.borrow().get(&key).and_then(|cached| {
                 cached
                     .downcast_ref::<cudarc::driver::CudaSlice<T>>()
-                    .cloned()
+                    .and_then(
+                        // try_clone, not Clone: the stream may be poisoned by an
+                        // earlier in-capture failure, and Clone unwraps (aborted
+                        // the process, 2026-10-07). A failed clone falls through
+                        // to the capturing check below and surfaces as an error.
+                        |slice| slice.try_clone().ok(),
+                    )
             })
         }) {
             return Ok(Some(cached));
