@@ -1,52 +1,42 @@
-//! Implementation of Backend traits for the CUDA (NVIDIA) device, and the
-//! AMD/HIP device in single-rocm builds via the crate-root `cudarc` alias.
-//! In dual cuda+rocm builds this module is the NVIDIA role; the identical
-//! body serves the AMD role through `hip_backend`.
-#[cfg(not(all(feature = "cuda", feature = "rocm")))]
+//! NVIDIA role shell: binds the shared backend body (`body/mod.rs`) to
+//! the vendored `cudarc-nvidia` driver crate in every build that links
+//! the CUDA feature (cuda-only and dual builds alike). This module is
+//! a ROLE DEFINITION, not a shape switch:
+//!   - kernels: the PTX twin crate (`candle-kernels-cuda`), loaded as
+//!     PTX source;
+//!   - graph-capture arena: present (ported to the vendored fork);
+//!   - hipBLASLt fast-path tier and managed uploads: absent on this
+//!     role's bound crate; GEMMs serve through the plain path and
+//!     weight uploads through the plain copy path (see BackendCaps).
+//!
+//! Legacy exception until the solo-rocm cutover (role-identity phase
+//! 3, journal 2026-10-06): in `--features rocm` alone this shell also
+//! serves the AMD role through the crate-root `cudarc` alias
+//! (= `cudarc-hip`, full fork API, binary kernel images). After the
+//! cutover this module compiles only for the NVIDIA role.
+#[cfg(all(feature = "rocm", not(feature = "cuda")))]
 pub use candle_kernels as kernels;
-#[cfg(all(feature = "cuda", feature = "rocm"))]
+#[cfg(feature = "cuda")]
 pub use candle_kernels_cuda as kernels;
 pub use cudarc;
-// Per-role capability switches for the shared backend body. Both roles
-// compile the same feature set, so cfg cannot distinguish them; the role
-// shells define these instead. In single-vendor builds (fork's cudarc-hip,
-// which has the graph-capture and Lt fast-path API) they expand to their
-// input; in a dual build the NVIDIA role (upstream cudarc, which lacks
-// that fork API) drops them. The dropped functionality is exactly the
-// BackendCaps degradation: that role serves GEMMs through the plain path
-// and exposes no graph-capture methods until the fork API is ported.
-/// Fork graph-capture arena API: present - expand to the input tokens.
-#[cfg(not(all(feature = "cuda", feature = "rocm")))]
+
+/// Fork graph-capture arena API: present on this shell's bound crate in
+/// every shape (cudarc-nvidia carries the arena port; the rocm-only
+/// alias binds cudarc-hip, which has it natively) - unconditional.
 macro_rules! gpu_fork_graphs {
     ($($tokens:tt)*) => {
         $($tokens)*
     };
 }
-/// Fork graph-capture arena API: present via the cudarc-nvidia companion
-/// fork (ported from cudarc-hip) - expand to the input tokens.
-#[cfg(all(feature = "cuda", feature = "rocm"))]
-macro_rules! gpu_fork_graphs {
-    ($($tokens:tt)*) => {
-        $($tokens)*
-    };
-}
-// Per-role capability switches for the shared backend body. Both roles
-// compile the same feature set, so cfg cannot distinguish them; the role
-// shells define these instead. In single-vendor builds (fork's cudarc-hip,
-// which has the graph-capture and Lt fast-path API) they expand to their
-// input; in a dual build the NVIDIA role (upstream cudarc, which lacks
-// that fork API) drops them. The dropped functionality is exactly the
-// BackendCaps degradation: that role serves GEMMs through the plain path
-// and exposes no graph-capture methods until the fork API is ported.
+
 /// PTX loading for the shared body, role-keyed. PTX text must reach
-/// cuModuleLoadData NUL-terminated (Ptx::from -> Src -> CString); the HIP
-/// path consumes the embedded binary image instead. Dual builds serve the
-/// NVIDIA role in this module, so they load the twin's PTX as source like
-/// cuda-only; the single-rocm alias (this module IS the hip backend there)
-/// loads binary. A shared cfg(feature="rocm") keyed the old choice, which
-/// fed raw PTX bytes as a binary image on the dual NVIDIA role and read
-/// past the unterminated string into garbage (CUDA_ERROR_INVALID_PTX).
-#[cfg(all(feature = "cuda", feature = "rocm"))]
+/// cuModuleLoadData NUL-terminated (Ptx::from -> Src -> CString); the
+/// rocm-only alias consumes the embedded binary image instead (the
+/// hipcc path has no PTX text to JIT). A shared cfg(feature="rocm")
+/// keyed the old choice, which fed raw PTX bytes as a binary image on
+/// the dual NVIDIA role and read past the unterminated string into
+/// garbage (CUDA_ERROR_INVALID_PTX).
+#[cfg(feature = "cuda")]
 macro_rules! gpu_ptx_load {
     ($mdl:expr) => {
         cudarc::nvrtc::Ptx::from($mdl.ptx())
@@ -58,73 +48,70 @@ macro_rules! gpu_ptx_load {
         cudarc::nvrtc::Ptx::from_binary($mdl.ptx_bytes().to_vec())
     };
 }
-#[cfg(all(feature = "cuda", not(feature = "rocm")))]
-macro_rules! gpu_ptx_load {
-    ($mdl:expr) => {
-        cudarc::nvrtc::Ptx::from($mdl.ptx())
-    };
-}
-/// Fork hipBLASLt fast-path API: present - expand to the input tokens.
-#[cfg(not(all(feature = "cuda", feature = "rocm")))]
+
+/// Fork hipBLASLt fast-path API: present only on the rocm-only alias
+/// (this shell bound to cudarc-hip). The NVIDIA role's bound crate
+/// does not carry the fork Lt API. Retires together with the alias in
+/// role-identity phase 3.
+#[cfg(all(feature = "rocm", not(feature = "cuda")))]
 macro_rules! gpu_fork_lt {
     ($($tokens:tt)*) => {
         $($tokens)*
     };
 }
-/// Fork hipBLASLt fast-path API: absent - drop the input tokens.
-#[cfg(all(feature = "cuda", feature = "rocm"))]
+#[cfg(feature = "cuda")]
 macro_rules! gpu_fork_lt {
     ($($tokens:tt)*) => {};
 }
 
-/// Companion to `gpu_fork_lt!`: expands to its input exactly where the Lt
-/// API is ABSENT (the NVIDIA role of a dual build), providing the stub
-/// definition the role still needs by name. No-op on single-vendor builds.
-#[cfg(all(feature = "cuda", feature = "rocm"))]
+/// Companion to `gpu_fork_lt!`: expands to its input exactly where the
+/// Lt API is ABSENT (the NVIDIA role in any cuda shape), providing the
+/// stub definition the role still needs by name. No-op on the alias.
+#[cfg(feature = "cuda")]
 macro_rules! gpu_fork_lt_stub {
     ($($tokens:tt)*) => {
         $($tokens)*
     };
 }
-#[cfg(not(all(feature = "cuda", feature = "rocm")))]
+#[cfg(all(feature = "rocm", not(feature = "cuda")))]
 macro_rules! gpu_fork_lt_stub {
     ($($tokens:tt)*) => {};
 }
 
-/// Inverted companion to the `gpu_fork_lt!` dispatch gate: expands to the
-/// plain-GEMM statement where the Lt branch above is ABSENT (NVIDIA role of
-/// a dual build), and to nothing where that branch handles it. This keeps
-/// the fast path on roles with the fork Lt API and a correct plain path
-/// everywhere without duplicating the GEMM logic beyond these three lines.
-#[cfg(all(feature = "cuda", feature = "rocm"))]
+/// Inverted companion to the `gpu_fork_lt!` dispatch gate: expands to
+/// the plain-GEMM statement where the Lt branch above is ABSENT (the
+/// NVIDIA role in any cuda shape), and to nothing where that branch
+/// handles it. This keeps the fast path on roles with the fork Lt API
+/// and a correct plain path everywhere without duplicating the GEMM
+/// logic beyond these three lines.
+#[cfg(feature = "cuda")]
 macro_rules! gpu_fork_lt_else {
     ($($tokens:tt)*) => {
         $($tokens)*
     };
 }
-#[cfg(not(all(feature = "cuda", feature = "rocm")))]
+#[cfg(all(feature = "rocm", not(feature = "cuda")))]
 macro_rules! gpu_fork_lt_else {
     ($($tokens:tt)*) => {};
 }
 
-/// Fork managed-memory upload API (`clone_htod_managed*`), present only on
-/// the fork's cudarc-hip. Roles without it serve weight uploads through the
-/// plain copy path (see `load_quantized_managed`'s existing fallback).
-#[cfg(not(all(feature = "cuda", feature = "rocm")))]
+/// Fork managed-memory upload API (`clone_htod_managed*`), present only
+/// on the rocm-only alias. Roles without it serve weight uploads through
+/// the plain copy path (see `load_quantized_managed`'s fallback).
+#[cfg(all(feature = "rocm", not(feature = "cuda")))]
 macro_rules! gpu_fork_managed {
     ($($tokens:tt)*) => {
         $($tokens)*
     };
 }
-#[cfg(all(feature = "cuda", feature = "rocm"))]
+#[cfg(feature = "cuda")]
 macro_rules! gpu_fork_managed {
     ($($tokens:tt)*) => {};
 }
 
-/// Role-owned device-location variant: the shared body cannot name it (both
-/// roles share the feature set), so each role shell defines which
-/// `DeviceLocation` variant its devices report. Single-vendor builds report
-/// `Cuda` exactly as before.
+/// Role-owned device-location variant: the shared body cannot name it
+/// (both roles share the feature set), so each role shell defines which
+/// `DeviceLocation` variant its devices report.
 macro_rules! gpu_backend_location {
     ($id:expr) => {
         crate::DeviceLocation::Cuda { gpu_id: $id }
