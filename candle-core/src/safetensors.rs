@@ -144,12 +144,12 @@ fn convert_slice<T: WithDType>(data: &[u8], shape: &[usize], device: &Device) ->
 // Activations and intermediates keep using `Tensor::from_slice/from_vec`.
 fn tensor_from_slice<T: WithDType>(data: &[T], shape: &[usize], device: &Device) -> Result<Tensor> {
     #[cfg(all(feature = "rocm", not(feature = "cuda")))]
-    if let Device::Cuda(dev) = device {
+    if let Device::Hip(dev) = device {
         if std::env::var("CANDLE_MANAGED_WEIGHTS").is_ok_and(|v| v == "1") {
             let shape = shape.into_shape(data.len())?;
             let storage = dev.storage_from_slice_managed(data)?;
             let op = BackpropOp::none();
-            return Ok(from_storage(Storage::Cuda(storage), shape, op, false));
+            return Ok(from_storage(Storage::Hip(storage), shape, op, false));
         }
     }
     Tensor::from_slice(data, shape, device)
@@ -272,7 +272,7 @@ impl Tensor {
                         };
                         Storage::Cuda(storage)
                     }
-                    #[cfg(all(feature = "cuda", feature = "rocm"))]
+                    #[cfg(feature = "rocm")]
                     Device::Hip(device) => {
                         let mut slice = unsafe { device.alloc::<u8>(data.len())? };
                         device.memcpy_htod(data, &mut slice)?;
@@ -394,7 +394,7 @@ fn convert_dummy(view: &st::TensorView<'_>, device: &Device) -> Result<Tensor> {
             };
             Storage::Cuda(storage)
         }
-        #[cfg(all(feature = "cuda", feature = "rocm"))]
+        #[cfg(feature = "rocm")]
         Device::Hip(device) => {
             let mut slice = unsafe { device.alloc::<u8>(data.len())? };
             device.memcpy_htod(data, &mut slice)?;
@@ -672,10 +672,10 @@ mod tests {
     fn managed_safetensors_upload_matches_copy() -> Result<()> {
         // Serving-role device: hip in dual builds (where the roles are
         // distinct variants), the Cuda role otherwise.
-        #[cfg(all(feature = "cuda", feature = "rocm"))]
-        let dev = Device::new_hip(0)?;
-        #[cfg(not(all(feature = "cuda", feature = "rocm")))]
+        #[cfg(all(feature = "cuda", not(feature = "rocm")))]
         let dev = Device::new_cuda(0)?;
+        #[cfg(feature = "rocm")]
+        let dev = Device::new_hip(0)?;
         let f32_vals: Vec<f32> = (0..64).map(|v| v as f32 * 0.5).collect();
         let f16_vals: Vec<half::f16> = (0..32)
             .map(|v| half::f16::from_f32(v as f32 * 0.25))

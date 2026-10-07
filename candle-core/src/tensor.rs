@@ -677,7 +677,7 @@ impl Tensor {
         match &*self.storage() {
             Storage::Cpu(cpu_storage) => from_cpu_storage(cpu_storage),
             Storage::Cuda(storage) => from_cpu_storage(&storage.to_cpu_storage()?),
-            #[cfg(all(feature = "cuda", feature = "rocm"))]
+            #[cfg(feature = "rocm")]
             Storage::Hip(storage) => from_cpu_storage(&storage.to_cpu_storage()?),
             Storage::Metal(storage) => from_cpu_storage(&storage.to_cpu_storage()?),
         }
@@ -1977,7 +1977,7 @@ impl Tensor {
         match &*self.storage() {
             Storage::Cpu(storage) => from_cpu_storage(storage),
             Storage::Cuda(storage) => from_cpu_storage(&storage.to_cpu_storage()?),
-            #[cfg(all(feature = "cuda", feature = "rocm"))]
+            #[cfg(feature = "rocm")]
             Storage::Hip(storage) => from_cpu_storage(&storage.to_cpu_storage()?),
             Storage::Metal(storage) => from_cpu_storage(&storage.to_cpu_storage()?),
         }
@@ -2010,7 +2010,7 @@ impl Tensor {
         match &*self.storage() {
             Storage::Cpu(storage) => from_cpu_storage(storage),
             Storage::Cuda(storage) => from_cpu_storage(&storage.to_cpu_storage()?),
-            #[cfg(all(feature = "cuda", feature = "rocm"))]
+            #[cfg(feature = "rocm")]
             Storage::Hip(storage) => from_cpu_storage(&storage.to_cpu_storage()?),
             Storage::Metal(storage) => from_cpu_storage(&storage.to_cpu_storage()?),
         }
@@ -2053,7 +2053,7 @@ impl Tensor {
         match &*self.storage() {
             Storage::Cpu(storage) => from_cpu_storage(storage),
             Storage::Cuda(storage) => from_cpu_storage(&storage.to_cpu_storage()?),
-            #[cfg(all(feature = "cuda", feature = "rocm"))]
+            #[cfg(feature = "rocm")]
             Storage::Hip(storage) => from_cpu_storage(&storage.to_cpu_storage()?),
             Storage::Metal(storage) => from_cpu_storage(&storage.to_cpu_storage()?),
         }
@@ -2409,7 +2409,7 @@ impl Tensor {
                 (Storage::Cpu(storage), Device::Cuda(cuda)) => {
                     Storage::Cuda(cuda.storage_from_cpu_storage(storage)?)
                 }
-                #[cfg(all(feature = "cuda", feature = "rocm"))]
+                #[cfg(feature = "rocm")]
                 (Storage::Cpu(storage), Device::Hip(hip)) => {
                     Storage::Hip(hip.storage_from_cpu_storage(storage)?)
                 }
@@ -2417,7 +2417,7 @@ impl Tensor {
                     Storage::Metal(metal.storage_from_cpu_storage(storage)?)
                 }
                 (Storage::Cuda(storage), Device::Cpu) => Storage::Cpu(storage.to_cpu_storage()?),
-                #[cfg(all(feature = "cuda", feature = "rocm"))]
+                #[cfg(feature = "rocm")]
                 (Storage::Hip(storage), Device::Cpu) => Storage::Cpu(storage.to_cpu_storage()?),
                 (Storage::Metal(storage), Device::Cpu) => Storage::Cpu(storage.to_cpu_storage()?),
                 (Storage::Cuda(storage), Device::Cuda(cuda)) => {
@@ -2425,7 +2425,7 @@ impl Tensor {
                     let dst_storage = storage.transfer_to_device(cuda)?;
                     Storage::Cuda(dst_storage)
                 }
-                #[cfg(all(feature = "cuda", feature = "rocm"))]
+                #[cfg(feature = "rocm")]
                 (Storage::Hip(storage), Device::Hip(hip)) => {
                     // same-device pointer rule as above; cross-vendor copies
                     // do not exist (host bounce only, never implicit).

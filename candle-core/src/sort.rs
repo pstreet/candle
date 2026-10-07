@@ -56,7 +56,7 @@ impl ArgSort {
     }
 }
 
-#[cfg(any(feature = "cuda", feature = "rocm"))]
+#[cfg(feature = "cuda")]
 mod cuda {
     use super::*;
     use crate::cuda_backend::cudarc::driver::{
@@ -107,7 +107,7 @@ mod cuda {
     }
 }
 
-#[cfg(all(feature = "cuda", feature = "rocm"))]
+#[cfg(feature = "rocm")]
 mod hip {
     use super::*;
     use crate::hip_backend::cudarc::driver::{
@@ -201,7 +201,7 @@ impl crate::CustomOp1 for ArgSort {
         Ok((sort_indexes, layout.shape().into()))
     }
 
-    #[cfg(any(feature = "cuda", feature = "rocm"))]
+    #[cfg(feature = "cuda")]
     fn cuda_fwd(
         &self,
         storage: &crate::CudaStorage,
@@ -218,7 +218,7 @@ impl crate::CustomOp1 for ArgSort {
         Ok((dst, layout.shape().clone()))
     }
 
-    #[cfg(all(feature = "cuda", feature = "rocm"))]
+    #[cfg(feature = "rocm")]
     fn hip_fwd(
         &self,
         storage: &crate::HipStorage,

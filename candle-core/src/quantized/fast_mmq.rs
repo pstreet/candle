@@ -4,11 +4,26 @@
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
+#[cfg(feature = "cuda")]
 use super::cuda::{QCudaStorage, MATRIX_ROW_PADDING};
+#[cfg(all(feature = "rocm", not(feature = "cuda")))]
+use super::hip::{QCudaStorage, MATRIX_ROW_PADDING};
 use super::GgmlDType;
+#[cfg(feature = "cuda")]
 use crate::cuda_backend::DeviceId;
+#[cfg(all(feature = "rocm", not(feature = "cuda")))]
+use crate::hip_backend::DeviceId;
+#[cfg(feature = "cuda")]
 use crate::{backend::BackendStorage, CudaDevice, CudaStorage, DType, GpuArch, Result, Shape};
+#[cfg(all(feature = "rocm", not(feature = "cuda")))]
+use crate::{
+    backend::BackendStorage, DType, GpuArch, HipDevice as CudaDevice, HipStorage as CudaStorage,
+    Result, Shape,
+};
 
+#[cfg(all(feature = "rocm", not(feature = "cuda")))]
+use crate::hip_backend::cudarc::driver::{CudaSlice, DevicePtr};
+#[cfg(feature = "cuda")]
 use cudarc::driver::{CudaSlice, DevicePtr};
 
 const QK8_1: usize = 32;
@@ -205,6 +220,9 @@ struct DeviceInfo {
 static DEVICE_INFO: OnceLock<Mutex<HashMap<DeviceId, DeviceInfo>>> = OnceLock::new();
 
 fn get_device_info(dev: &CudaDevice) -> Result<DeviceInfo> {
+    #[cfg(all(feature = "rocm", not(feature = "cuda")))]
+    use crate::hip_backend::cudarc::driver::{result, sys};
+    #[cfg(feature = "cuda")]
     use cudarc::driver::{result, sys};
     let map = DEVICE_INFO.get_or_init(|| Mutex::new(HashMap::new()));
     let key = dev.id();
@@ -251,7 +269,10 @@ fn get_device_info(dev: &CudaDevice) -> Result<DeviceInfo> {
     let info = DeviceInfo {
         // Kernel-bridge encoding the llama.cpp launchers expect; policy code
         // below matches on `arch` instead.
+        #[cfg(feature = "cuda")]
         arch: GpuArch::resolve(dev)?,
+        #[cfg(all(feature = "rocm", not(feature = "cuda")))]
+        arch: GpuArch::resolve_hip(dev)?,
         cc: major * 100 + minor * 10,
         nsm,
         smpbo: smpbo as i64,

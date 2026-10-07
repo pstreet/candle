@@ -29,7 +29,7 @@ pub enum GpuArch {
 // AMD-role arch resolution for dual builds, sharing the rocm branch shape
 // below but bound to the unambiguous `cudarc_hip` paths (the crate-root
 // `cudarc` alias is the real NVIDIA crate there).
-#[cfg(all(feature = "cuda", feature = "rocm"))]
+#[cfg(feature = "rocm")]
 macro_rules! rocm_resolve_on {
     ($krate:ident, $stream:expr) => {{
         let cu_device = $stream.context().cu_device();
@@ -61,6 +61,7 @@ macro_rules! rocm_resolve_on {
 
 #[cfg(any(feature = "cuda", feature = "rocm"))]
 impl GpuArch {
+    #[cfg(feature = "cuda")]
     pub fn resolve(dev: &crate::CudaDevice) -> Result<Self> {
         use crate::cudarc::driver::{result, sys};
         let stream = dev.cuda_stream();
@@ -101,7 +102,7 @@ impl GpuArch {
     }
 
     /// Arch resolution for the AMD-role device of a dual build.
-    #[cfg(all(feature = "cuda", feature = "rocm"))]
+    #[cfg(feature = "rocm")]
     pub fn resolve_hip(dev: &crate::HipDevice) -> Result<Self> {
         let stream = dev.cuda_stream();
         rocm_resolve_on!(cudarc_hip, stream)

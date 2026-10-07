@@ -3,11 +3,26 @@
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
+#[cfg(feature = "cuda")]
 use super::cuda::{QCudaStorage, MATRIX_ROW_PADDING};
+#[cfg(all(feature = "rocm", not(feature = "cuda")))]
+use super::hip::{QCudaStorage, MATRIX_ROW_PADDING};
 use super::GgmlDType;
+#[cfg(feature = "cuda")]
 use crate::cuda_backend::DeviceId;
+#[cfg(all(feature = "rocm", not(feature = "cuda")))]
+use crate::hip_backend::DeviceId;
+#[cfg(feature = "cuda")]
 use crate::{backend::BackendStorage, CudaDevice, CudaStorage, DType, Result, Shape};
+#[cfg(all(feature = "rocm", not(feature = "cuda")))]
+use crate::{
+    backend::BackendStorage, DType, HipDevice as CudaDevice, HipStorage as CudaStorage, Result,
+    Shape,
+};
 
+#[cfg(all(feature = "rocm", not(feature = "cuda")))]
+use crate::hip_backend::cudarc::driver::{CudaSlice, DevicePtr};
+#[cfg(feature = "cuda")]
 use cudarc::driver::{CudaSlice, DevicePtr};
 
 const Q8_1_BLOCK_SIZE: usize = 32;

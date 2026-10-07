@@ -569,16 +569,13 @@ pub fn has_mkl() -> bool {
 }
 
 pub fn cuda_is_available() -> bool {
-    // `crate::cudarc` binds per shape (real NVIDIA under `cuda`, the HIP
-    // re-implementation under plain `rocm`), so this probes the backend
-    // behind `Device::Cuda` in every shape. Link-mode probes report true,
-    // keeping single-vendor behavior unchanged; dual builds gain the
-    // runtime gate. Cold paths only: the probe dlopens the runtime.
-    #[cfg(any(feature = "cuda", feature = "rocm"))]
+    // NVIDIA-role availability: real NVIDIA runtime under `cuda` (single
+    // or dual). Solo-`rocm` has no NVIDIA role (see `hip_is_available`).
+    #[cfg(feature = "cuda")]
     {
         unsafe { crate::cudarc::driver::sys::is_culib_present() }
     }
-    #[cfg(not(any(feature = "cuda", feature = "rocm")))]
+    #[cfg(not(feature = "cuda"))]
     {
         false
     }
@@ -587,7 +584,7 @@ pub fn cuda_is_available() -> bool {
 /// AMD-role availability in dual builds: probes the dlopened HIP runtime.
 /// No single-vendor equivalent: plain `rocm` links the runtime, so
 /// `cuda_is_available` (the serving role there) is already the truth.
-#[cfg(all(feature = "cuda", feature = "rocm"))]
+#[cfg(feature = "rocm")]
 pub fn hip_is_available() -> bool {
     unsafe { crate::hip_backend::cudarc::driver::sys::is_culib_present() }
 }

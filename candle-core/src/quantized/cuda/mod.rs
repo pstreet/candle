@@ -3,11 +3,8 @@
 //! feature (cuda-only and dual alike). Vendor bindings and the role
 //! macros below are what the shared body resolves against.
 //!
-//! Legacy exception until the solo-rocm cutover (role-identity phase
-//! 3, journal 2026-10-06): in `--features rocm` alone this shell also
-//! serves the AMD role through the crate-root `cudarc` alias, with the
-//! full fork API and fused dispatch. After the cutover this module
-//! compiles only for the NVIDIA role.
+//! Solo-`rocm` serves the AMD role through `quantized::hip` (Phase 3
+//! cutover); this module is NVIDIA-role only.
 
 use crate::cuda_backend::set_gemm_reduced_precision_f16;
 use crate::cuda_backend::{
@@ -15,35 +12,20 @@ use crate::cuda_backend::{
 };
 pub use crate::cudarc;
 
-// Fork managed-upload API: present only on the rocm-only alias (this
-// shell bound to cudarc-hip). The NVIDIA role's bound crate does not
-// carry it; weight uploads serve through the plain copy path. Retires
-// together with the alias in role-identity phase 3.
-#[cfg(all(feature = "rocm", not(feature = "cuda")))]
-macro_rules! gpu_fork_managed {
-    ($($tokens:tt)*) => {
-        $($tokens)*
-    };
-}
 #[cfg(feature = "cuda")]
 macro_rules! gpu_fork_managed {
     ($($tokens:tt)*) => {};
 }
 
-// Inverted companion of the fork-API macro: expands only for the
-// NVIDIA role in any cuda shape (there the managed path is dropped and
-// the plain copy below serves); no-op on the rocm-only alias.
+// Inverted companion of the fork-API macro: expands for the NVIDIA
+// role (there the managed path is dropped and the plain copy below
+// serves).
 #[cfg(feature = "cuda")]
 macro_rules! gpu_fork_lt_else {
     ($($tokens:tt)*) => {
         $($tokens)*
     };
 }
-#[cfg(all(feature = "rocm", not(feature = "cuda")))]
-macro_rules! gpu_fork_lt_else {
-    ($($tokens:tt)*) => {};
-}
-
 // QStorage variant this role constructs: the `Cuda` variant in every
 // shape this shell serves.
 macro_rules! gpu_qstorage {
@@ -52,16 +34,8 @@ macro_rules! gpu_qstorage {
     };
 }
 
-// Fused MMVQ/MMQ dispatch attempt: present only on the rocm-only
-// alias. The NVIDIA role in any cuda shape routes through the dequant
-// fallback (see body.rs) until the fused path is ported and benched
-// for that role.
-#[cfg(all(feature = "rocm", not(feature = "cuda")))]
-macro_rules! gpu_quant_fused {
-    ($($tokens:tt)*) => {
-        $($tokens)*
-    };
-}
+// Fused MMVQ/MMQ dispatch attempt: absent on the NVIDIA role, which
+// routes through the dequant fallback (see body.rs).
 #[cfg(feature = "cuda")]
 macro_rules! gpu_quant_fused {
     ($($tokens:tt)*) => {};
@@ -73,7 +47,7 @@ include!("body.rs");
 // driver-gated and its fused paths are dispatched by mistral.rs instead.
 // The AMD role carries its own coverage in quantized/hip.rs.
 #[cfg(test)]
-#[cfg(not(all(feature = "cuda", feature = "rocm")))]
+#[cfg(all(feature = "cuda", not(feature = "rocm")))]
 mod test {
     use super::*;
 

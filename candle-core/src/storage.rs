@@ -2,7 +2,7 @@ use crate::backend::BackendStorage;
 use crate::custom_op::{all_distinct, InplaceOpN, Src};
 use crate::op::{self, CmpOp, ReduceOp};
 use crate::scalar::Scalar;
-#[cfg(all(feature = "cuda", feature = "rocm"))]
+#[cfg(feature = "rocm")]
 use crate::HipStorage;
 use crate::{CpuStorage, CudaStorage, DType, Device, Error, Layout, MetalStorage, Result, Shape};
 use crate::{CustomOp1, CustomOp2, CustomOp3};
@@ -17,7 +17,7 @@ pub enum Storage {
     Metal(MetalStorage),
     /// AMD-role storage of a dual build. Never mixed with `Cuda` storage in
     /// one op: no cross-vendor peer copies exist, only host bounces.
-    #[cfg(all(feature = "cuda", feature = "rocm"))]
+    #[cfg(feature = "rocm")]
     Hip(crate::HipStorage),
 }
 
@@ -32,7 +32,7 @@ impl Storage {
                 let storage = storage.try_clone(layout)?;
                 Ok(Self::Cuda(storage))
             }
-            #[cfg(all(feature = "cuda", feature = "rocm"))]
+            #[cfg(feature = "rocm")]
             Self::Hip(storage) => {
                 let storage = storage.try_clone(layout)?;
                 Ok(Self::Hip(storage))
@@ -50,9 +50,9 @@ impl Storage {
     #[cfg(any(feature = "cuda", feature = "rocm"))]
     pub fn as_role_storage(&self) -> Result<&crate::role::RoleStorage> {
         match self {
-            #[cfg(not(all(feature = "cuda", feature = "rocm")))]
+            #[cfg(all(feature = "cuda", not(feature = "rocm")))]
             Self::Cuda(s) => Ok(s),
-            #[cfg(all(feature = "cuda", feature = "rocm"))]
+            #[cfg(feature = "rocm")]
             Self::Hip(s) => Ok(s),
             _ => crate::bail!("expected the serving role's storage"),
         }
@@ -62,7 +62,7 @@ impl Storage {
         match self {
             Self::Cpu(_) => Device::Cpu,
             Self::Cuda(storage) => Device::Cuda(storage.device().clone()),
-            #[cfg(all(feature = "cuda", feature = "rocm"))]
+            #[cfg(feature = "rocm")]
             Self::Hip(storage) => Device::Hip(storage.device().clone()),
             Self::Metal(storage) => Device::Metal(storage.device().clone()),
         }
@@ -72,7 +72,7 @@ impl Storage {
         match self {
             Self::Cpu(storage) => storage.dtype(),
             Self::Cuda(storage) => storage.dtype(),
-            #[cfg(all(feature = "cuda", feature = "rocm"))]
+            #[cfg(feature = "rocm")]
             Self::Hip(storage) => storage.dtype(),
             Self::Metal(storage) => storage.dtype(),
         }
@@ -112,7 +112,7 @@ impl Storage {
         match self {
             Storage::Cpu(storage) => storage.const_set(v, l),
             Storage::Cuda(storage) => storage.const_set(v, l),
-            #[cfg(all(feature = "cuda", feature = "rocm"))]
+            #[cfg(feature = "rocm")]
             Storage::Hip(storage) => storage.const_set(v, l),
             Storage::Metal(storage) => storage.const_set(v, l),
         }
@@ -128,7 +128,7 @@ impl Storage {
                 let storage = storage.affine(layout, mul, add)?;
                 Ok(Self::Cuda(storage))
             }
-            #[cfg(all(feature = "cuda", feature = "rocm"))]
+            #[cfg(feature = "rocm")]
             Self::Hip(storage) => {
                 let storage = storage.affine(layout, mul, add)?;
                 Ok(Self::Hip(storage))
@@ -150,7 +150,7 @@ impl Storage {
                 let storage = storage.powf(layout, alpha)?;
                 Ok(Self::Cuda(storage))
             }
-            #[cfg(all(feature = "cuda", feature = "rocm"))]
+            #[cfg(feature = "rocm")]
             Self::Hip(storage) => {
                 let storage = storage.powf(layout, alpha)?;
                 Ok(Self::Hip(storage))
@@ -172,7 +172,7 @@ impl Storage {
                 let storage = storage.elu(layout, alpha)?;
                 Ok(Self::Cuda(storage))
             }
-            #[cfg(all(feature = "cuda", feature = "rocm"))]
+            #[cfg(feature = "rocm")]
             Self::Hip(storage) => {
                 let storage = storage.elu(layout, alpha)?;
                 Ok(Self::Hip(storage))
@@ -202,7 +202,7 @@ impl Storage {
                 let storage = lhs.cmp(op, rhs, lhs_layout, rhs_layout)?;
                 Ok(Self::Cuda(storage))
             }
-            #[cfg(all(feature = "cuda", feature = "rocm"))]
+            #[cfg(feature = "rocm")]
             (Self::Hip(lhs), Self::Hip(rhs)) => {
                 let storage = lhs.cmp(op, rhs, lhs_layout, rhs_layout)?;
                 Ok(Self::Hip(storage))
@@ -234,7 +234,7 @@ impl Storage {
                 let storage = storage.reduce_op(op, layout, s)?;
                 Ok(Self::Cuda(storage))
             }
-            #[cfg(all(feature = "cuda", feature = "rocm"))]
+            #[cfg(feature = "rocm")]
             Self::Hip(storage) => {
                 let storage = storage.reduce_op(op, layout, s)?;
                 Ok(Self::Hip(storage))
@@ -256,7 +256,7 @@ impl Storage {
                 let storage = storage.to_dtype(layout, dtype)?;
                 Ok(Self::Cuda(storage))
             }
-            #[cfg(all(feature = "cuda", feature = "rocm"))]
+            #[cfg(feature = "rocm")]
             Self::Hip(storage) => {
                 let storage = storage.to_dtype(layout, dtype)?;
                 Ok(Self::Hip(storage))
@@ -278,7 +278,7 @@ impl Storage {
                 let (storage, shape) = c.cuda_fwd(storage, l)?;
                 Ok((Self::Cuda(storage), shape))
             }
-            #[cfg(all(feature = "cuda", feature = "rocm"))]
+            #[cfg(feature = "rocm")]
             Self::Hip(storage) => {
                 let (storage, shape) = c.hip_fwd(storage, l)?;
                 Ok((Self::Hip(storage), shape))
@@ -307,7 +307,7 @@ impl Storage {
                 let (s, shape) = c.cuda_fwd(s1, l1, s2, l2)?;
                 Ok((Self::Cuda(s), shape))
             }
-            #[cfg(all(feature = "cuda", feature = "rocm"))]
+            #[cfg(feature = "rocm")]
             (Self::Hip(s1), Self::Hip(s2)) => {
                 let (s, shape) = c.hip_fwd(s1, l1, s2, l2)?;
                 Ok((Self::Hip(s), shape))
@@ -340,7 +340,7 @@ impl Storage {
                 let (s, shape) = c.cuda_fwd(s1, l1, s2, l2, s3, l3)?;
                 Ok((Self::Cuda(s), shape))
             }
-            #[cfg(all(feature = "cuda", feature = "rocm"))]
+            #[cfg(feature = "rocm")]
             (Self::Hip(s1), Self::Hip(s2), Self::Hip(s3)) => {
                 let (s, shape) = c.hip_fwd(s1, l1, s2, l2, s3, l3)?;
                 Ok((Self::Hip(s), shape))
@@ -395,7 +395,7 @@ impl Storage {
         match self {
             Storage::Cpu(dst) => inplace_dispatch!(dst, Cpu, cpu_fwd, cpu_fwd_aliased),
             Storage::Cuda(dst) => inplace_dispatch!(dst, Cuda, cuda_fwd, cuda_fwd_aliased),
-            #[cfg(all(feature = "cuda", feature = "rocm"))]
+            #[cfg(feature = "rocm")]
             Storage::Hip(dst) => inplace_dispatch!(dst, Hip, hip_fwd, hip_fwd_aliased),
             Storage::Metal(dst) => inplace_dispatch!(dst, Metal, metal_fwd, metal_fwd_aliased),
         }
@@ -411,7 +411,7 @@ impl Storage {
                 let storage = storage.unary_impl::<B>(layout)?;
                 Ok(Self::Cuda(storage))
             }
-            #[cfg(all(feature = "cuda", feature = "rocm"))]
+            #[cfg(feature = "rocm")]
             Self::Hip(storage) => {
                 let storage = storage.unary_impl::<B>(layout)?;
                 Ok(Self::Hip(storage))
@@ -440,7 +440,7 @@ impl Storage {
                 let storage = lhs.binary_impl::<B>(rhs, lhs_layout, rhs_layout)?;
                 Ok(Self::Cuda(storage))
             }
-            #[cfg(all(feature = "cuda", feature = "rocm"))]
+            #[cfg(feature = "rocm")]
             (Self::Hip(lhs), Self::Hip(rhs)) => {
                 let storage = lhs.binary_impl::<B>(rhs, lhs_layout, rhs_layout)?;
                 Ok(Self::Hip(storage))
@@ -480,7 +480,7 @@ impl Storage {
                 let s = inp.conv1d(l, kernel, kernel_l, params)?;
                 Ok(Self::Cuda(s))
             }
-            #[cfg(all(feature = "cuda", feature = "rocm"))]
+            #[cfg(feature = "rocm")]
             (Storage::Hip(inp), Storage::Hip(kernel)) => {
                 let s = inp.conv1d(l, kernel, kernel_l, params)?;
                 Ok(Self::Hip(s))
@@ -516,7 +516,7 @@ impl Storage {
                 let s = inp.conv_transpose1d(l, kernel, kernel_l, params)?;
                 Ok(Self::Cuda(s))
             }
-            #[cfg(all(feature = "cuda", feature = "rocm"))]
+            #[cfg(feature = "rocm")]
             (Storage::Hip(inp), Storage::Hip(kernel)) => {
                 let s = inp.conv_transpose1d(l, kernel, kernel_l, params)?;
                 Ok(Self::Hip(s))
@@ -552,7 +552,7 @@ impl Storage {
                 let s = inp.conv2d(l, kernel, kernel_l, params)?;
                 Ok(Self::Cuda(s))
             }
-            #[cfg(all(feature = "cuda", feature = "rocm"))]
+            #[cfg(feature = "rocm")]
             (Storage::Hip(inp), Storage::Hip(kernel)) => {
                 let s = inp.conv2d(l, kernel, kernel_l, params)?;
                 Ok(Self::Hip(s))
@@ -588,7 +588,7 @@ impl Storage {
                 let s = inp.conv_transpose2d(l, kernel, kernel_l, params)?;
                 Ok(Self::Cuda(s))
             }
-            #[cfg(all(feature = "cuda", feature = "rocm"))]
+            #[cfg(feature = "rocm")]
             (Storage::Hip(inp), Storage::Hip(kernel)) => {
                 let s = inp.conv_transpose2d(l, kernel, kernel_l, params)?;
                 Ok(Self::Hip(s))
@@ -621,7 +621,7 @@ impl Storage {
                 let storage = storage.avg_pool2d(layout, kernel_size, stride)?;
                 Ok(Self::Cuda(storage))
             }
-            #[cfg(all(feature = "cuda", feature = "rocm"))]
+            #[cfg(feature = "rocm")]
             Self::Hip(storage) => {
                 let storage = storage.avg_pool2d(layout, kernel_size, stride)?;
                 Ok(Self::Hip(storage))
@@ -648,7 +648,7 @@ impl Storage {
                 let storage = storage.max_pool2d(layout, kernel_size, stride)?;
                 Ok(Self::Cuda(storage))
             }
-            #[cfg(all(feature = "cuda", feature = "rocm"))]
+            #[cfg(feature = "rocm")]
             Self::Hip(storage) => {
                 let storage = storage.max_pool2d(layout, kernel_size, stride)?;
                 Ok(Self::Hip(storage))
@@ -670,7 +670,7 @@ impl Storage {
                 let storage = storage.upsample_nearest1d(layout, sz)?;
                 Ok(Self::Cuda(storage))
             }
-            #[cfg(all(feature = "cuda", feature = "rocm"))]
+            #[cfg(feature = "rocm")]
             Self::Hip(storage) => {
                 let storage = storage.upsample_nearest1d(layout, sz)?;
                 Ok(Self::Hip(storage))
@@ -692,7 +692,7 @@ impl Storage {
                 let storage = storage.upsample_nearest2d(layout, h, w)?;
                 Ok(Self::Cuda(storage))
             }
-            #[cfg(all(feature = "cuda", feature = "rocm"))]
+            #[cfg(feature = "rocm")]
             Self::Hip(storage) => {
                 let storage = storage.upsample_nearest2d(layout, h, w)?;
                 Ok(Self::Hip(storage))
@@ -724,7 +724,7 @@ impl Storage {
                     storage.upsample_bilinear2d(layout, h, w, align_corners, scale_h, scale_w)?;
                 Ok(Self::Cuda(storage))
             }
-            #[cfg(all(feature = "cuda", feature = "rocm"))]
+            #[cfg(feature = "rocm")]
             Self::Hip(storage) => {
                 let storage =
                     storage.upsample_bilinear2d(layout, h, w, align_corners, scale_h, scale_w)?;
@@ -758,7 +758,7 @@ impl Storage {
                 let storage = cond.where_cond(layout, t, layout_t, f, layout_f)?;
                 Ok(Self::Cuda(storage))
             }
-            #[cfg(all(feature = "cuda", feature = "rocm"))]
+            #[cfg(feature = "rocm")]
             (Self::Hip(cond), Self::Hip(t), Self::Hip(f)) => {
                 let storage = cond.where_cond(layout, t, layout_t, f, layout_f)?;
                 Ok(Self::Hip(storage))
@@ -793,7 +793,7 @@ impl Storage {
                 let storage = s.gather(l, indexes, indexes_l, d)?;
                 Ok(Self::Cuda(storage))
             }
-            #[cfg(all(feature = "cuda", feature = "rocm"))]
+            #[cfg(feature = "rocm")]
             (Self::Hip(s), Self::Hip(indexes)) => {
                 let storage = s.gather(l, indexes, indexes_l, d)?;
                 Ok(Self::Hip(storage))
@@ -824,7 +824,7 @@ impl Storage {
             (Self::Cuda(s), Self::Cuda(indexes), Self::Cuda(source)) => {
                 s.scatter_set(l, indexes, indexes_l, source, source_l, d)?;
             }
-            #[cfg(all(feature = "cuda", feature = "rocm"))]
+            #[cfg(feature = "rocm")]
             (Self::Hip(s), Self::Hip(indexes), Self::Hip(source)) => {
                 s.scatter_set(l, indexes, indexes_l, source, source_l, d)?;
             }
@@ -854,7 +854,7 @@ impl Storage {
             (Self::Cuda(s), Self::Cuda(indexes), Self::Cuda(source)) => {
                 s.scatter_add_set(l, indexes, indexes_l, source, source_l, d)?;
             }
-            #[cfg(all(feature = "cuda", feature = "rocm"))]
+            #[cfg(feature = "rocm")]
             (Self::Hip(s), Self::Hip(indexes), Self::Hip(source)) => {
                 s.scatter_add_set(l, indexes, indexes_l, source, source_l, d)?;
             }
@@ -886,7 +886,7 @@ impl Storage {
                 let storage = s.index_add(l, indexes, indexes_l, source, source_l, d)?;
                 Ok(Self::Cuda(storage))
             }
-            #[cfg(all(feature = "cuda", feature = "rocm"))]
+            #[cfg(feature = "rocm")]
             (Self::Hip(s), Self::Hip(indexes), Self::Hip(source)) => {
                 let storage = s.index_add(l, indexes, indexes_l, source, source_l, d)?;
                 Ok(Self::Hip(storage))
@@ -916,7 +916,7 @@ impl Storage {
                 let storage = lhs.index_select(rhs, lhs_l, rhs_l, d)?;
                 Ok(Self::Cuda(storage))
             }
-            #[cfg(all(feature = "cuda", feature = "rocm"))]
+            #[cfg(feature = "rocm")]
             (Self::Hip(lhs), Self::Hip(rhs)) => {
                 let storage = lhs.index_select(rhs, lhs_l, rhs_l, d)?;
                 Ok(Self::Hip(storage))
@@ -952,7 +952,7 @@ impl Storage {
                 let storage = lhs.matmul(rhs, bmnk, lhs_layout, rhs_layout)?;
                 Ok(Self::Cuda(storage))
             }
-            #[cfg(all(feature = "cuda", feature = "rocm"))]
+            #[cfg(feature = "rocm")]
             (Self::Hip(lhs), Self::Hip(rhs)) => {
                 let storage = lhs.matmul(rhs, bmnk, lhs_layout, rhs_layout)?;
                 Ok(Self::Hip(storage))
@@ -980,7 +980,7 @@ impl Storage {
         match (self, dst) {
             (Self::Cpu(src), Self::Cpu(dst)) => src.copy_strided_src(dst, dst_offset, src_l),
             (Self::Cuda(src), Self::Cuda(dst)) => Ok(src.copy_strided_src(dst, dst_offset, src_l)?),
-            #[cfg(all(feature = "cuda", feature = "rocm"))]
+            #[cfg(feature = "rocm")]
             (Self::Hip(src), Self::Hip(dst)) => Ok(src.copy_strided_src(dst, dst_offset, src_l)?),
             (Self::Metal(src), Self::Metal(dst)) => {
                 Ok(src.copy_strided_src(dst, dst_offset, src_l)?)
@@ -1010,7 +1010,7 @@ impl Storage {
             (Self::Cuda(src), Self::Cuda(dst)) => {
                 Ok(src.copy2d(dst, d1, d2, src_s, dst_s, src_o, dst_o)?)
             }
-            #[cfg(all(feature = "cuda", feature = "rocm"))]
+            #[cfg(feature = "rocm")]
             (Self::Hip(src), Self::Hip(dst)) => {
                 Ok(src.copy2d(dst, d1, d2, src_s, dst_s, src_o, dst_o)?)
             }

@@ -13,24 +13,28 @@ pub enum DeviceLocation {
     Metal {
         gpu_id: usize,
     },
-    /// AMD device in a dual cuda+rocm build. The per-API index mirrors
+    /// AMD device in rocm builds (solo or dual). The per-API index mirrors
     /// `Cuda { gpu_id }`; `hip:0` and `cuda:0` may address the same card.
-    #[cfg(all(feature = "cuda", feature = "rocm"))]
+    /// In solo-rocm builds nothing constructs `Cuda` (see `new_cuda`);
+    /// it survives unconditionally so shared matches keep compiling,
+    /// exactly as CPU builds already carry it over the dummy backend.
+    #[cfg(feature = "rocm")]
     Hip {
         gpu_id: usize,
     },
 }
 
-/// Cpu, Cuda, Metal, and - in dual cuda+rocm builds - Hip (the AMD role)
+/// Cpu, Cuda, Metal, and Hip (rocm builds, solo or dual). In solo-rocm
+/// builds `Cuda` holds the dummy backend and is never constructed.
 #[derive(Debug, Clone)]
 pub enum Device {
     Cpu,
     Cuda(crate::CudaDevice),
     Metal(crate::MetalDevice),
-    /// AMD-role device of a dual build. One model pins one backend; a Hip
+    /// AMD-role device. One model pins one backend; a Hip
     /// device never shares kernels or streams with a Cuda device, even on
     /// the same physical card.
-    #[cfg(all(feature = "cuda", feature = "rocm"))]
+    #[cfg(feature = "rocm")]
     Hip(crate::HipDevice),
 }
 
@@ -251,11 +255,27 @@ impl Device {
         // dynamic-loading the first driver call with no runtime present
         // panics instead of returning Err. `crate::cudarc` binds per shape,
         // so this gates the backend behind `Device::Cuda` in every shape.
-        #[cfg(any(feature = "cuda", feature = "rocm"))]
+        #[cfg(feature = "cuda")]
         if !unsafe { crate::cudarc::driver::sys::is_culib_present() } {
             crate::bail!("GPU device requested but its runtime is not loadable on this machine");
         }
-        Ok(Self::Cuda(crate::CudaDevice::new(ordinal)?))
+        #[cfg(feature = "cuda")]
+        return Ok(Self::Cuda(crate::CudaDevice::new(ordinal)?));
+        // Solo-rocm has no NVIDIA role: loudly redirect legacy `cuda:N`
+        // requests to the serving (hip) role so old configs keep working
+        // with notice. Dual builds keep the real NVIDIA constructor above.
+        #[cfg(all(feature = "rocm", not(feature = "cuda")))]
+        {
+            static WARNED: std::sync::Once = std::sync::Once::new();
+            WARNED.call_once(|| {
+                eprintln!(
+                    "candle: `cuda:N` has no NVIDIA role in rocm-only builds; redirecting to the hip role"
+                );
+            });
+            return Self::new_hip(ordinal);
+        }
+        #[cfg(not(any(feature = "cuda", feature = "rocm")))]
+        return Ok(Self::Cuda(crate::CudaDevice::new(ordinal)?));
     }
 
     pub fn as_cuda_device(&self) -> Result<&crate::CudaDevice> {
@@ -263,7 +283,7 @@ impl Device {
             Self::Cuda(d) => Ok(d),
             Self::Cpu => crate::bail!("expected a cuda device, got cpu"),
             Self::Metal(_) => crate::bail!("expected a cuda device, got Metal"),
-            #[cfg(all(feature = "cuda", feature = "rocm"))]
+            #[cfg(feature = "rocm")]
             Self::Hip(_) => crate::bail!("expected a cuda device, got hip"),
         }
     }
@@ -273,23 +293,36 @@ impl Device {
             Self::Cuda(_) => crate::bail!("expected a metal device, got cuda"),
             Self::Cpu => crate::bail!("expected a metal device, got cpu"),
             Self::Metal(d) => Ok(d),
-            #[cfg(all(feature = "cuda", feature = "rocm"))]
+            #[cfg(feature = "rocm")]
             Self::Hip(_) => crate::bail!("expected a metal device, got hip"),
         }
     }
 
     pub fn new_cuda_with_stream(ordinal: usize) -> Result<Self> {
-        #[cfg(any(feature = "cuda", feature = "rocm"))]
+        #[cfg(feature = "cuda")]
         if !unsafe { crate::cudarc::driver::sys::is_culib_present() } {
             crate::bail!("GPU device requested but its runtime is not loadable on this machine");
         }
-        Ok(Self::Cuda(crate::CudaDevice::new_with_stream(ordinal)?))
+        #[cfg(feature = "cuda")]
+        return Ok(Self::Cuda(crate::CudaDevice::new_with_stream(ordinal)?));
+        #[cfg(all(feature = "rocm", not(feature = "cuda")))]
+        {
+            static WARNED_STREAM: std::sync::Once = std::sync::Once::new();
+            WARNED_STREAM.call_once(|| {
+                eprintln!(
+                    "candle: `cuda:N` has no NVIDIA role in rocm-only builds; redirecting to the hip role"
+                );
+            });
+            return Self::new_hip_with_stream(ordinal);
+        }
+        #[cfg(not(any(feature = "cuda", feature = "rocm")))]
+        return Ok(Self::Cuda(crate::CudaDevice::new_with_stream(ordinal)?));
     }
 
     /// AMD-role device of a dual build (`hip:<ordinal>` in S3 routing).
     /// Probe-gated like `new_cuda`: a clean Err naming the missing ROCm
     /// runtime, never a driver panic on machines without one.
-    #[cfg(all(feature = "cuda", feature = "rocm"))]
+    #[cfg(feature = "rocm")]
     pub fn new_hip(ordinal: usize) -> Result<Self> {
         if !unsafe { crate::hip_backend::cudarc::driver::sys::is_culib_present() } {
             crate::bail!("hip device requested but no ROCm runtime is loadable on this machine");
@@ -298,7 +331,7 @@ impl Device {
     }
 
     /// AMD-role device of a dual build, with its own stream.
-    #[cfg(all(feature = "cuda", feature = "rocm"))]
+    #[cfg(feature = "rocm")]
     pub fn new_hip_with_stream(ordinal: usize) -> Result<Self> {
         if !unsafe { crate::hip_backend::cudarc::driver::sys::is_culib_present() } {
             crate::bail!("hip device requested but no ROCm runtime is loadable on this machine");
@@ -311,13 +344,15 @@ impl Device {
     /// downstream C kernels are hipcc-built).
     #[cfg(any(feature = "cuda", feature = "rocm"))]
     pub fn as_role_device(&self) -> Result<&crate::role::RoleDevice> {
-        #[cfg(not(all(feature = "cuda", feature = "rocm")))]
-        return self.as_cuda_device();
         #[cfg(all(feature = "cuda", feature = "rocm"))]
+        return self.as_hip_device();
+        #[cfg(all(feature = "cuda", not(feature = "rocm")))]
+        return self.as_cuda_device();
+        #[cfg(all(feature = "rocm", not(feature = "cuda")))]
         return self.as_hip_device();
     }
 
-    #[cfg(all(feature = "cuda", feature = "rocm"))]
+    #[cfg(feature = "rocm")]
     pub fn as_hip_device(&self) -> Result<&crate::HipDevice> {
         match self {
             Self::Hip(d) => Ok(d),
@@ -352,7 +387,7 @@ impl Device {
             Self::Cpu => CpuDevice.set_seed(seed),
             Self::Cuda(c) => c.set_seed(seed),
             Self::Metal(m) => m.set_seed(seed),
-            #[cfg(all(feature = "cuda", feature = "rocm"))]
+            #[cfg(feature = "rocm")]
             Self::Hip(h) => h.set_seed(seed),
         }
     }
@@ -362,7 +397,7 @@ impl Device {
             Self::Cpu => CpuDevice.get_current_seed(),
             Self::Cuda(c) => c.get_current_seed(),
             Self::Metal(m) => m.get_current_seed(),
-            #[cfg(all(feature = "cuda", feature = "rocm"))]
+            #[cfg(feature = "rocm")]
             Self::Hip(h) => h.get_current_seed(),
         }
     }
@@ -372,7 +407,7 @@ impl Device {
             (Self::Cpu, Self::Cpu) => true,
             (Self::Cuda(lhs), Self::Cuda(rhs)) => lhs.same_device(rhs),
             (Self::Metal(lhs), Self::Metal(rhs)) => lhs.same_device(rhs),
-            #[cfg(all(feature = "cuda", feature = "rocm"))]
+            #[cfg(feature = "rocm")]
             (Self::Hip(lhs), Self::Hip(rhs)) => lhs.same_device(rhs),
             _ => false,
         }
@@ -383,7 +418,7 @@ impl Device {
             Self::Cpu => DeviceLocation::Cpu,
             Self::Cuda(device) => device.location(),
             Device::Metal(device) => device.location(),
-            #[cfg(all(feature = "cuda", feature = "rocm"))]
+            #[cfg(feature = "rocm")]
             Self::Hip(device) => device.location(),
         }
     }
@@ -400,7 +435,7 @@ impl Device {
         matches!(self, Self::Metal(_))
     }
 
-    #[cfg(all(feature = "cuda", feature = "rocm"))]
+    #[cfg(feature = "rocm")]
     pub fn is_hip(&self) -> bool {
         matches!(self, Self::Hip(_))
     }
@@ -408,7 +443,7 @@ impl Device {
     pub fn supports_bf16(&self) -> bool {
         match self {
             Self::Cuda(_) | Self::Metal(_) => true,
-            #[cfg(all(feature = "cuda", feature = "rocm"))]
+            #[cfg(feature = "rocm")]
             Self::Hip(_) => true,
             Self::Cpu => false,
         }
@@ -461,7 +496,7 @@ impl Device {
                     Ok(Storage::Cuda(storage))
                 }
             }
-            #[cfg(all(feature = "cuda", feature = "rocm"))]
+            #[cfg(feature = "rocm")]
             Device::Hip(device) => {
                 // TODO: Remove the special case if we start supporting generating f16/bf16 directly.
                 if dtype == DType::F16 || dtype == DType::BF16 {
@@ -510,7 +545,7 @@ impl Device {
                     Ok(Storage::Cuda(storage))
                 }
             }
-            #[cfg(all(feature = "cuda", feature = "rocm"))]
+            #[cfg(feature = "rocm")]
             Device::Hip(device) => {
                 // TODO: Remove the special case if we start supporting generating f16/bf16 directly.
                 if dtype == DType::F16 || dtype == DType::BF16 {
@@ -547,7 +582,7 @@ impl Device {
                 let storage = device.zeros_impl(shape, dtype)?;
                 Ok(Storage::Cuda(storage))
             }
-            #[cfg(all(feature = "cuda", feature = "rocm"))]
+            #[cfg(feature = "rocm")]
             Device::Hip(device) => {
                 let storage = device.zeros_impl(shape, dtype)?;
                 Ok(Storage::Hip(storage))
@@ -569,7 +604,7 @@ impl Device {
                 let storage = device.alloc_uninit(shape, dtype)?;
                 Ok(Storage::Cuda(storage))
             }
-            #[cfg(all(feature = "cuda", feature = "rocm"))]
+            #[cfg(feature = "rocm")]
             Device::Hip(device) => {
                 let storage = device.alloc_uninit(shape, dtype)?;
                 Ok(Storage::Hip(storage))
@@ -588,7 +623,7 @@ impl Device {
                 let storage = device.storage_from_slice(data)?;
                 Ok(Storage::Cuda(storage))
             }
-            #[cfg(all(feature = "cuda", feature = "rocm"))]
+            #[cfg(feature = "rocm")]
             Device::Hip(device) => {
                 let storage = device.storage_from_slice(data)?;
                 Ok(Storage::Hip(storage))
@@ -608,7 +643,7 @@ impl Device {
                 let storage = device.storage_from_cpu_storage_owned(storage)?;
                 Ok(Storage::Cuda(storage))
             }
-            #[cfg(all(feature = "cuda", feature = "rocm"))]
+            #[cfg(feature = "rocm")]
             Device::Hip(device) => {
                 let storage = array.to_cpu_storage();
                 let storage = device.storage_from_cpu_storage_owned(storage)?;
@@ -630,7 +665,7 @@ impl Device {
                 let storage = device.storage_from_cpu_storage_owned(storage)?;
                 Ok(Storage::Cuda(storage))
             }
-            #[cfg(all(feature = "cuda", feature = "rocm"))]
+            #[cfg(feature = "rocm")]
             Device::Hip(device) => {
                 let storage = S::to_cpu_storage_owned(data);
                 let storage = device.storage_from_cpu_storage_owned(storage)?;
@@ -649,7 +684,7 @@ impl Device {
             Self::Cpu => Ok(()),
             Self::Cuda(d) => d.synchronize(),
             Self::Metal(d) => d.synchronize(),
-            #[cfg(all(feature = "cuda", feature = "rocm"))]
+            #[cfg(feature = "rocm")]
             Self::Hip(d) => d.synchronize(),
         }
     }

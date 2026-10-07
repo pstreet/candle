@@ -1,7 +1,7 @@
 use crate::layout::LayoutRelation;
 use crate::op::{BackpropOp, Op};
 use crate::tensor::from_storage;
-#[cfg(all(feature = "cuda", feature = "rocm"))]
+#[cfg(feature = "rocm")]
 use crate::HipStorage;
 use crate::{bail, CpuStorage, CudaStorage, Layout, MetalStorage, Result, Shape, Storage, Tensor};
 use std::sync::Arc;
@@ -26,7 +26,7 @@ pub trait CustomOp1 {
     /// The forward pass, as run on a hip (AMD) device in a dual
     /// build. Defaults to a bail so existing ops keep compiling;
     /// hip support is opt-in per op.
-    #[cfg(all(feature = "cuda", feature = "rocm"))]
+    #[cfg(feature = "rocm")]
     fn hip_fwd(&self, _storage: &HipStorage, _layout: &Layout) -> Result<(HipStorage, Shape)> {
         Err(crate::Error::Msg(format!(
             "no hip implementation for {}",
@@ -84,7 +84,7 @@ pub trait CustomOp2 {
     /// The forward pass, as run on a hip (AMD) device in a dual
     /// build. Defaults to a bail so existing ops keep compiling;
     /// hip support is opt-in per op.
-    #[cfg(all(feature = "cuda", feature = "rocm"))]
+    #[cfg(feature = "rocm")]
     fn hip_fwd(
         &self,
         _: &HipStorage,
@@ -158,7 +158,7 @@ pub trait CustomOp3 {
     /// The forward pass, as run on a hip (AMD) device in a dual
     /// build. Defaults to a bail so existing ops keep compiling;
     /// hip support is opt-in per op.
-    #[cfg(all(feature = "cuda", feature = "rocm"))]
+    #[cfg(feature = "rocm")]
     fn hip_fwd(
         &self,
         _: &HipStorage,
@@ -318,7 +318,7 @@ pub trait InplaceOp1 {
     /// The forward pass, as run on a hip (AMD) device in a dual
     /// build. Defaults to a bail so existing ops keep compiling;
     /// hip support is opt-in per op.
-    #[cfg(all(feature = "cuda", feature = "rocm"))]
+    #[cfg(feature = "rocm")]
     fn hip_fwd(&self, _storage: &mut HipStorage, _layout: &Layout) -> Result<()> {
         Err(crate::Error::Msg(format!(
             "no hip implementation for {}",
@@ -379,7 +379,7 @@ pub trait InplaceOpN<const N: usize> {
     /// The forward pass, as run on a hip (AMD) device in a dual
     /// build. Defaults to a bail so existing ops keep compiling;
     /// hip support is opt-in per op.
-    #[cfg(all(feature = "cuda", feature = "rocm"))]
+    #[cfg(feature = "rocm")]
     fn hip_fwd(
         &self,
         dst: &mut HipStorage,
@@ -406,7 +406,7 @@ pub trait InplaceOpN<const N: usize> {
     /// The forward pass, as run on a hip (AMD) device in a dual
     /// build. Defaults to a bail so existing ops keep compiling;
     /// hip support is opt-in per op.
-    #[cfg(all(feature = "cuda", feature = "rocm"))]
+    #[cfg(feature = "rocm")]
     fn hip_fwd_aliased(
         &self,
         dst: &mut HipStorage,
@@ -525,7 +525,7 @@ impl<C: InplaceOp1> InplaceOpN<0> for C {
     forward_op1!(cuda_fwd, cuda_fwd_aliased, CudaStorage);
     forward_op1!(metal_fwd, metal_fwd_aliased, MetalStorage);
 
-    #[cfg(all(feature = "cuda", feature = "rocm"))]
+    #[cfg(feature = "rocm")]
     fn hip_fwd(
         &self,
         dst: &mut HipStorage,
@@ -535,7 +535,7 @@ impl<C: InplaceOp1> InplaceOpN<0> for C {
         InplaceOp1::hip_fwd(self, dst, dl)
     }
 
-    #[cfg(all(feature = "cuda", feature = "rocm"))]
+    #[cfg(feature = "rocm")]
     fn hip_fwd_aliased(
         &self,
         dst: &mut HipStorage,
@@ -584,7 +584,7 @@ impl<C: InplaceOp2> InplaceOpN<1> for C {
     forward_op2!(cuda_fwd, cuda_fwd_aliased, CudaStorage);
     forward_op2!(metal_fwd, metal_fwd_aliased, MetalStorage);
 
-    #[cfg(all(feature = "cuda", feature = "rocm"))]
+    #[cfg(feature = "rocm")]
     fn hip_fwd(
         &self,
         dst: &mut HipStorage,
@@ -595,7 +595,7 @@ impl<C: InplaceOp2> InplaceOpN<1> for C {
         InplaceOp2::hip_fwd(self, dst, dl, s, sl)
     }
 
-    #[cfg(all(feature = "cuda", feature = "rocm"))]
+    #[cfg(feature = "rocm")]
     fn hip_fwd_aliased(
         &self,
         dst: &mut HipStorage,
@@ -638,7 +638,7 @@ pub trait InplaceOp2 {
     /// The forward pass, as run on a hip (AMD) device in a dual
     /// build. Defaults to a bail so existing ops keep compiling;
     /// hip support is opt-in per op.
-    #[cfg(all(feature = "cuda", feature = "rocm"))]
+    #[cfg(feature = "rocm")]
     fn hip_fwd(
         &self,
         s1: &mut HipStorage,
@@ -709,7 +709,7 @@ impl<C: InplaceOp3> InplaceOpN<2> for C {
     forward_op3!(cuda_fwd, cuda_fwd_aliased, CudaStorage);
     forward_op3!(metal_fwd, metal_fwd_aliased, MetalStorage);
 
-    #[cfg(all(feature = "cuda", feature = "rocm"))]
+    #[cfg(feature = "rocm")]
     fn hip_fwd(
         &self,
         dst: &mut HipStorage,
@@ -720,7 +720,7 @@ impl<C: InplaceOp3> InplaceOpN<2> for C {
         InplaceOp3::hip_fwd(self, dst, dl, s1, l1, s2, l2)
     }
 
-    #[cfg(all(feature = "cuda", feature = "rocm"))]
+    #[cfg(feature = "rocm")]
     fn hip_fwd_aliased(
         &self,
         dst: &mut HipStorage,
@@ -773,7 +773,7 @@ pub trait InplaceOp3 {
     /// The forward pass, as run on a hip (AMD) device in a dual
     /// build. Defaults to a bail so existing ops keep compiling;
     /// hip support is opt-in per op.
-    #[cfg(all(feature = "cuda", feature = "rocm"))]
+    #[cfg(feature = "rocm")]
     fn hip_fwd(
         &self,
         _: &mut HipStorage,

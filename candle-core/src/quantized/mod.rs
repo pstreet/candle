@@ -23,15 +23,15 @@ pub mod tokenizer;
 mod metal {
     pub use super::dummy_metal::*;
 }
-#[cfg(any(feature = "cuda", feature = "rocm"))]
+#[cfg(feature = "cuda")]
 pub mod cuda;
 #[cfg(feature = "rocm")]
 pub mod fast_mmq;
 #[cfg(feature = "rocm")]
 pub mod fast_mmvq;
-#[cfg(all(feature = "cuda", feature = "rocm"))]
+#[cfg(feature = "rocm")]
 pub mod hip;
-#[cfg(not(any(feature = "cuda", feature = "rocm")))]
+#[cfg(not(feature = "cuda"))]
 mod cuda {
     pub use super::dummy_cuda::*;
 }
@@ -86,7 +86,7 @@ impl Device {
                 let storage = cuda::QCudaStorage::zeros(cuda, elem_count, dtype)?;
                 Ok(QStorage::Cuda(storage))
             }
-            #[cfg(all(feature = "cuda", feature = "rocm"))]
+            #[cfg(feature = "rocm")]
             Device::Hip(d) => {
                 let storage = hip::QCudaStorage::zeros(d, elem_count, dtype)?;
                 Ok(QStorage::Hip(storage))
@@ -99,7 +99,7 @@ pub enum QStorage {
     Cpu(Box<dyn QuantizedType>),
     Metal(metal::QMetalStorage),
     Cuda(cuda::QCudaStorage),
-    #[cfg(all(feature = "cuda", feature = "rocm"))]
+    #[cfg(feature = "rocm")]
     Hip(hip::QCudaStorage),
 }
 
@@ -142,7 +142,7 @@ impl QStorage {
                 GgmlDType::Q8K => cuda::load_quantized(d, as_t_slice::<BlockQ8K>(data)),
                 GgmlDType::BF16 => cuda::load_quantized(d, as_t_slice::<bf16>(data)),
             },
-            #[cfg(all(feature = "cuda", feature = "rocm"))]
+            #[cfg(feature = "rocm")]
             Device::Hip(d) => match dtype {
                 GgmlDType::F32 => hip::load_quantized(d, as_t_slice::<f32>(data)),
                 GgmlDType::F16 => hip::load_quantized(d, as_t_slice::<f16>(data)),
@@ -205,7 +205,7 @@ impl QStorage {
                 GgmlDType::Q8K => cuda::load_quantized_managed(d, as_t_slice::<BlockQ8K>(data)),
                 GgmlDType::BF16 => cuda::load_quantized_managed(d, as_t_slice::<bf16>(data)),
             },
-            #[cfg(all(feature = "cuda", feature = "rocm"))]
+            #[cfg(feature = "rocm")]
             Device::Hip(d) => match dtype {
                 GgmlDType::F32 => hip::load_quantized_managed(d, as_t_slice::<f32>(data)),
                 GgmlDType::F16 => hip::load_quantized_managed(d, as_t_slice::<f16>(data)),
@@ -231,7 +231,7 @@ impl QStorage {
             QStorage::Cpu(storage) => storage.block_size(),
             QStorage::Metal(storage) => storage.dtype().block_size(),
             QStorage::Cuda(storage) => storage.dtype().block_size(),
-            #[cfg(all(feature = "cuda", feature = "rocm"))]
+            #[cfg(feature = "rocm")]
             QStorage::Hip(storage) => storage.dtype().block_size(),
         }
     }
@@ -241,7 +241,7 @@ impl QStorage {
             QStorage::Cpu(storage) => storage.dtype(),
             QStorage::Metal(storage) => storage.dtype(),
             QStorage::Cuda(storage) => storage.dtype(),
-            #[cfg(all(feature = "cuda", feature = "rocm"))]
+            #[cfg(feature = "rocm")]
             QStorage::Hip(storage) => storage.dtype(),
         }
     }
@@ -251,7 +251,7 @@ impl QStorage {
             QStorage::Cpu(_storage) => Device::Cpu,
             QStorage::Metal(storage) => Device::Metal(storage.device().clone()),
             QStorage::Cuda(storage) => Device::Cuda(storage.device().clone()),
-            #[cfg(all(feature = "cuda", feature = "rocm"))]
+            #[cfg(feature = "rocm")]
             QStorage::Hip(storage) => Device::Hip(storage.device().clone()),
         }
     }
@@ -261,7 +261,7 @@ impl QStorage {
             QStorage::Cpu(storage) => storage.storage_size_in_bytes(),
             QStorage::Metal(storage) => storage.storage_size_in_bytes(),
             QStorage::Cuda(storage) => storage.storage_size_in_bytes(),
-            #[cfg(all(feature = "cuda", feature = "rocm"))]
+            #[cfg(feature = "rocm")]
             QStorage::Hip(storage) => storage.storage_size_in_bytes(),
         }
     }
@@ -273,7 +273,7 @@ impl QStorage {
             }
             (QStorage::Metal(storage), Storage::Metal(src)) => storage.quantize(src)?,
             (QStorage::Cuda(storage), Storage::Cuda(src)) => storage.quantize(src)?,
-            #[cfg(all(feature = "cuda", feature = "rocm"))]
+            #[cfg(feature = "rocm")]
             (QStorage::Hip(storage), Storage::Hip(src)) => storage.quantize(src)?,
             _ => crate::bail!("Invalid quantize storage locations do not match"),
         }
@@ -296,7 +296,7 @@ impl QStorage {
             (QStorage::Cuda(storage), Storage::Cuda(src)) => {
                 storage.quantize_imatrix(src, imatrix_weights, n_per_row)?
             }
-            #[cfg(all(feature = "cuda", feature = "rocm"))]
+            #[cfg(feature = "rocm")]
             (QStorage::Hip(storage), Storage::Hip(src)) => {
                 storage.quantize_imatrix(src, imatrix_weights, n_per_row)?
             }
@@ -312,7 +312,7 @@ impl QStorage {
             }
             (QStorage::Metal(storage), Storage::Cpu(src)) => storage.quantize_onto(src)?,
             (QStorage::Cuda(storage), Storage::Cpu(src)) => storage.quantize_onto(src)?,
-            #[cfg(all(feature = "cuda", feature = "rocm"))]
+            #[cfg(feature = "rocm")]
             (QStorage::Hip(storage), Storage::Cpu(src)) => storage.quantize_onto(src)?,
             _ => crate::bail!("Invalid quantize source storage locations: not on cpu"),
         }
@@ -335,7 +335,7 @@ impl QStorage {
             (QStorage::Cuda(storage), Storage::Cpu(src)) => {
                 storage.quantize_imatrix_onto(src, imatrix_weights, n_per_row)?
             }
-            #[cfg(all(feature = "cuda", feature = "rocm"))]
+            #[cfg(feature = "rocm")]
             (QStorage::Hip(storage), Storage::Cpu(src)) => {
                 storage.quantize_imatrix_onto(src, imatrix_weights, n_per_row)?
             }
@@ -349,7 +349,7 @@ impl QStorage {
             QStorage::Cpu(storage) => Ok(Storage::Cpu(storage.dequantize(elem_count)?)),
             QStorage::Metal(storage) => Ok(Storage::Metal(storage.dequantize(elem_count)?)),
             QStorage::Cuda(storage) => Ok(Storage::Cuda(storage.dequantize(elem_count)?)),
-            #[cfg(all(feature = "cuda", feature = "rocm"))]
+            #[cfg(feature = "rocm")]
             QStorage::Hip(storage) => Ok(Storage::Hip(storage.dequantize(elem_count)?)),
         }
     }
@@ -363,7 +363,7 @@ impl QStorage {
                 Ok(Cow::from(data))
             }
             QStorage::Cuda(storage) => Ok(Cow::from(storage.data()?)),
-            #[cfg(all(feature = "cuda", feature = "rocm"))]
+            #[cfg(feature = "rocm")]
             QStorage::Hip(storage) => Ok(Cow::from(storage.data()?)),
             QStorage::Metal(storage) => Ok(Cow::from(storage.data()?)),
         }
@@ -372,7 +372,7 @@ impl QStorage {
     pub fn device_ptr(&self) -> Result<*const u8> {
         match self {
             QStorage::Cuda(storage) => storage.device_ptr(),
-            #[cfg(all(feature = "cuda", feature = "rocm"))]
+            #[cfg(feature = "rocm")]
             QStorage::Hip(storage) => storage.device_ptr(),
             QStorage::Metal(_) | QStorage::Cpu(_) => {
                 crate::bail!("not implemented");
@@ -389,11 +389,11 @@ impl QStorage {
         crate::role::backend::cudarc::driver::SyncOnDrop<'a>,
     )> {
         match self {
-            #[cfg(not(all(feature = "cuda", feature = "rocm")))]
+            #[cfg(all(feature = "cuda", not(feature = "rocm")))]
             QStorage::Cuda(storage) => storage.device_ptr_with_guard(stream),
-            #[cfg(all(feature = "cuda", feature = "rocm"))]
+            #[cfg(feature = "rocm")]
             QStorage::Cuda(_) => crate::bail!("not implemented"),
-            #[cfg(all(feature = "cuda", feature = "rocm"))]
+            #[cfg(feature = "rocm")]
             QStorage::Hip(storage) => storage.device_ptr_with_guard(stream),
             QStorage::Metal(_) | QStorage::Cpu(_) => {
                 crate::bail!("not implemented");
@@ -867,7 +867,7 @@ impl QTensor {
                 }
                 _ => unreachable!("ids were moved to the QTensor device"),
             },
-            #[cfg(all(feature = "cuda", feature = "rocm"))]
+            #[cfg(feature = "rocm")]
             QStorage::Hip(storage) => match &*ids.storage() {
                 Storage::Hip(ids_storage) => {
                     Storage::Hip(storage.embedding(rows, hidden, ids_storage, ids.layout())?)
@@ -909,7 +909,7 @@ impl QTensor {
                     panic!("Non-cuda indexed_moe_forward is not implemented!");
                 }
             },
-            #[cfg(all(feature = "cuda", feature = "rocm"))]
+            #[cfg(feature = "rocm")]
             QStorage::Hip(s) => match (&*x.storage(), &*ids.storage()) {
                 (Storage::Hip(x_storage), Storage::Hip(ids_storage)) => {
                     let (storage, out_shape) = s.indexed_moe_forward(
@@ -939,7 +939,7 @@ impl QTensor {
     pub fn device_ptr(&self) -> Result<*const u8> {
         match &self.storage {
             QStorage::Cuda(storage) => storage.device_ptr(),
-            #[cfg(all(feature = "cuda", feature = "rocm"))]
+            #[cfg(feature = "rocm")]
             QStorage::Hip(storage) => storage.device_ptr(),
             QStorage::Metal(_) | QStorage::Cpu(_) => {
                 crate::bail!("not implemented");
@@ -1342,7 +1342,7 @@ impl crate::CustomOp1 for QTensor {
         let self_storage = match &self.storage {
             QStorage::Cpu(storage) => storage,
             QStorage::Metal(_) | QStorage::Cuda(_) => crate::bail!("Invalid storage"),
-            #[cfg(all(feature = "cuda", feature = "rocm"))]
+            #[cfg(feature = "rocm")]
             QStorage::Hip(_) => crate::bail!("Invalid storage"),
         };
         match storage.dtype() {
@@ -1429,7 +1429,7 @@ impl crate::CustomOp1 for QTensor {
         self_storage.fwd(&self.shape, storage, layout)
     }
 
-    #[cfg(all(feature = "cuda", feature = "rocm"))]
+    #[cfg(feature = "rocm")]
     fn hip_fwd(
         &self,
         storage: &crate::HipStorage,

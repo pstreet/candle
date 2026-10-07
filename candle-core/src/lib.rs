@@ -55,7 +55,7 @@ pub mod conv;
 mod convert;
 pub mod cpu;
 pub mod cpu_backend;
-#[cfg(any(feature = "cuda", feature = "rocm"))]
+#[cfg(feature = "cuda")]
 pub mod cuda_backend;
 mod custom_op;
 mod device;
@@ -66,7 +66,7 @@ pub mod dummy_dtype;
 mod dummy_metal_backend;
 pub mod error;
 pub mod gpu;
-#[cfg(all(feature = "cuda", feature = "rocm"))]
+#[cfg(feature = "rocm")]
 pub mod hip_backend;
 mod indexer;
 pub mod layout;
@@ -116,14 +116,17 @@ pub use strided_index::{StridedBlocks, StridedIndex};
 pub use tensor::{Tensor, TensorId};
 pub use variable::Var;
 
-#[cfg(any(feature = "cuda", feature = "rocm"))]
+#[cfg(feature = "cuda")]
 pub use cuda_backend as cuda;
 
-#[cfg(not(any(feature = "cuda", feature = "rocm")))]
+#[cfg(not(feature = "cuda"))]
 pub use dummy_cuda_backend as cuda;
 
-pub use cuda::{CudaDevice, CudaStorage};
-#[cfg(all(feature = "cuda", feature = "rocm"))]
+#[cfg(feature = "cuda")]
+pub use cuda_backend::{CudaDevice, CudaStorage};
+#[cfg(not(feature = "cuda"))]
+pub use dummy_cuda_backend::{CudaDevice, CudaStorage};
+#[cfg(feature = "rocm")]
 pub use hip_backend::{CudaDevice as HipDevice, CudaStorage as HipStorage};
 
 #[cfg(feature = "metal")]
@@ -152,12 +155,8 @@ extern crate accelerate_src;
 //   feature: combination-keyed code uses all(feature = "cuda",
 //   feature = "rocm") throughout.
 
-// Under plain `rocm`, `cudarc-hip` (`cudarc_hip`) re-implements the `cudarc`
-// surface over HIP; alias it so the single-vendor GPU backend needs no source
-// changes. In a multi-vendor (`cuda,rocm`) build the name `cudarc` is the
-// real NVIDIA crate and the AMD role binds it per-module (see `hip_backend`).
-#[cfg(all(feature = "rocm", not(feature = "cuda")))]
-pub extern crate cudarc_hip as cudarc;
+// Solo-`rocm` serves the AMD role through `hip_backend` directly
+// (Phase 3 cutover); the old `cudarc_hip as cudarc` alias is retired.
 // Under `cuda` (single or dual) the name `cudarc` is the real NVIDIA crate -
 // needed by the backend bodies and GpuArch resolution.
 #[cfg(feature = "cuda")]

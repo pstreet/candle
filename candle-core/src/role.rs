@@ -5,9 +5,9 @@
 //! meaning: `cuda_backend` bound to the compiled vendor. (A future NVIDIA-
 //! serving consumer would bind the other role here instead - the mechanism
 //! is intentionally one alias.)
-#[cfg(not(all(feature = "cuda", feature = "rocm")))]
+#[cfg(all(feature = "cuda", not(feature = "rocm")))]
 pub use super::cuda_backend as backend;
-#[cfg(all(feature = "cuda", feature = "rocm"))]
+#[cfg(feature = "rocm")]
 pub use super::hip_backend as backend;
 
 /// The serving role's JIT-kernel modules.
