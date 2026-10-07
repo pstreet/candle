@@ -1,11 +1,11 @@
 // Adapted from https://github.com/guoqingbao/attention.rs/blob/main/src/moe.rs
-#[cfg(any(feature = "cuda", feature = "rocm"))]
+#[cfg(feature = "cuda")]
 use candle::cuda_backend::kernels::ffi;
 #[allow(unused_imports)]
 use candle::quantized::{self, QTensor};
 use candle::{Result, Tensor};
 
-#[cfg(any(feature = "cuda", feature = "rocm"))]
+#[cfg(feature = "cuda")]
 pub fn moe_gemm(
     input: &Tensor,
     weights: &Tensor,
@@ -164,7 +164,7 @@ pub fn moe_gemm(
     candle::bail!("moe_gemm is only implemented for the cuda backend")
 }
 
-#[cfg(any(feature = "cuda", feature = "rocm"))]
+#[cfg(feature = "cuda")]
 #[allow(clippy::too_many_arguments)]
 pub fn moe_gemm_gguf(
     input: &Tensor,

@@ -82,7 +82,7 @@ impl candle::CustomOp1 for Sigmoid {
         Ok((storage, layout.shape().clone()))
     }
 
-    #[cfg(any(feature = "cuda", feature = "rocm"))]
+    #[cfg(feature = "cuda")]
     fn cuda_fwd(
         &self,
         storage: &candle::CudaStorage,
@@ -133,7 +133,7 @@ impl candle::CustomOp1 for Sigmoid {
         };
         Ok((dst, layout.shape().clone()))
     }
-    #[cfg(all(feature = "cuda", feature = "rocm"))]
+    #[cfg(feature = "rocm")]
     /// Dual-role twin of cuda_fwd: the same JIT kernels through the
     /// hip role's bindings (companion-plugin FFI included).
     fn hip_fwd(
@@ -383,7 +383,7 @@ impl candle::CustomOp1 for SoftmaxLastDim {
         }
     }
 
-    #[cfg(any(feature = "cuda", feature = "rocm"))]
+    #[cfg(feature = "cuda")]
     fn cuda_fwd(
         &self,
         storage: &candle::CudaStorage,
@@ -439,7 +439,7 @@ impl candle::CustomOp1 for SoftmaxLastDim {
         };
         Ok((dst, layout.shape().clone()))
     }
-    #[cfg(all(feature = "cuda", feature = "rocm"))]
+    #[cfg(feature = "rocm")]
     /// Dual-role twin of cuda_fwd: the same JIT kernels through the
     /// hip role's bindings (companion-plugin FFI included).
     fn hip_fwd(
@@ -651,7 +651,7 @@ impl candle::CustomOp2 for RmsNorm {
         }
     }
 
-    #[cfg(any(feature = "cuda", feature = "rocm"))]
+    #[cfg(feature = "cuda")]
     fn cuda_fwd(
         &self,
         s1: &candle::CudaStorage,
@@ -719,7 +719,7 @@ impl candle::CustomOp2 for RmsNorm {
         };
         Ok((dst, l1.shape().clone()))
     }
-    #[cfg(all(feature = "cuda", feature = "rocm"))]
+    #[cfg(feature = "rocm")]
     /// Dual-role twin of cuda_fwd: the same JIT kernels through the
     /// hip role's bindings (companion-plugin FFI included).
     fn hip_fwd(
@@ -957,7 +957,7 @@ impl candle::CustomOp3 for LayerNorm {
         }
     }
 
-    #[cfg(any(feature = "cuda", feature = "rocm"))]
+    #[cfg(feature = "cuda")]
     fn cuda_fwd(
         &self,
         s1: &candle::CudaStorage,
@@ -1035,7 +1035,7 @@ impl candle::CustomOp3 for LayerNorm {
         };
         Ok((dst, l1.shape().clone()))
     }
-    #[cfg(all(feature = "cuda", feature = "rocm"))]
+    #[cfg(feature = "rocm")]
     /// Dual-role twin of cuda_fwd: the same JIT kernels through the
     /// hip role's bindings (companion-plugin FFI included).
     fn hip_fwd(
