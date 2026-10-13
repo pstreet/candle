@@ -1752,9 +1752,34 @@ impl BackendStorage for CudaStorage {
             let is_capturing = self.device.cuda_stream().capture_status()
                 == Ok(cudarc::driver::sys::CUstreamCaptureStatus::CU_STREAM_CAPTURE_STATUS_ACTIVE);
             if is_capturing {
+                // Name the tensor on capture-host-read failures so the
+                // forward's offending read can be staged or eliminated
+                // (found the dual-cuda conv-scatter D2H this way).
+                let len = match &self.slice {
+                    CudaStorageSlice::U8(s) => s.len(),
+                    CudaStorageSlice::U32(s) => s.len(),
+                    CudaStorageSlice::I16(s) => s.len(),
+                    CudaStorageSlice::I32(s) => s.len(),
+                    CudaStorageSlice::I64(s) => s.len(),
+                    CudaStorageSlice::BF16(s) => s.len(),
+                    CudaStorageSlice::F16(s) => s.len(),
+                    CudaStorageSlice::F32(s) => s.len(),
+                    CudaStorageSlice::F64(s) => s.len(),
+                    CudaStorageSlice::F8E4M3(s) => s.len(),
+                    CudaStorageSlice::F6E2M3(s) => s.len(),
+                    CudaStorageSlice::F6E3M2(s) => s.len(),
+                    CudaStorageSlice::F4(s) => s.len(),
+                    CudaStorageSlice::F8E8M0(s) => s.len(),
+                };
+                eprintln!(
+                    "[cuda-capture-hunt] to_cpu_storage during capture [dtype={:?} len={len}]:\n{:?}",
+                    self.dtype(),
+                    std::backtrace::Backtrace::force_capture()
+                );
                 crate::bail!(
-                    "to_cpu_storage during CUDA graph capture: host/device copies are not \
-                     permitted while capturing"
+                    "to_cpu_storage during CUDA graph capture [dtype={:?} len={len}]: host/device copies are not \
+                     permitted while capturing",
+                    self.dtype()
                 );
             }
         }

@@ -65,6 +65,14 @@ impl CudaContext {
         };
         let need = (bytes + 255) & !255usize;
         let offset = self.capture_arena_offset.fetch_add(need, Ordering::AcqRel);
+        // Per-carve ledger for capture-arena sizing hunts (mirrors the
+        // hip-side MRS_ARENA_ALLOC_LOG): env-gated, inert otherwise.
+        static ARENA_ALLOC_LOG: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        if *ARENA_ALLOC_LOG
+            .get_or_init(|| std::env::var("MRS_ARENA_ALLOC_LOG").as_deref() == Ok("1"))
+        {
+            eprintln!("[cudarc] arena_alloc off={offset} size={need}");
+        }
         if offset + need > arena.len() {
             self.capture_arena_overflowed.store(true, Ordering::Release);
             eprintln!(
