@@ -81,10 +81,21 @@ impl ScalarBuilderArg for crate::scalar::Scalar {
 
 impl SlicePtrOrNull<usize> {
     pub fn params_from_vec(dev: &CudaDevice, params: Vec<usize>) -> Result<Self> {
+        // Fault-hunt: every upload below is async, and a consumer on another
+        // stream (loader threads, the capture fork) with event tracking
+        // disabled can read the vector before the copy lands - observed live
+        // twice as garbage dims/stride vectors producing wild strided reads
+        // on never-allocated VAs. With tracking on, same-stream ordering and
+        // event edges make the upload visible in time, so the sync below only
+        // runs in the regime where the safety net is off.
+        let untracked = !dev.is_event_tracking();
         if device::cuda_graph_htod_cache_enabled() {
             let key = (dev.id(), params.clone());
             let cache = CUDA_PARAM_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
             if let Some(slice) = cache.lock().unwrap().get(&key).cloned() {
+                if untracked {
+                    dev.cuda_stream().synchronize().w()?;
+                }
                 return Ok(SlicePtrOrNull::Cached(slice));
             }
 
@@ -98,12 +109,22 @@ impl SlicePtrOrNull<usize> {
             }
 
             let slice = Arc::new(dev.cuda_stream().clone_htod(&params).w()?);
+            if untracked {
+                // Settle the upload before publishing the entry: a second
+                // thread hitting the cache above must never observe a vector
+                // whose copy is still in flight.
+                dev.cuda_stream().synchronize().w()?;
+            }
             let mut cache = cache.lock().unwrap();
             let slice = cache.entry(key).or_insert_with(|| slice).clone();
             return Ok(SlicePtrOrNull::Cached(slice));
         }
 
-        Ok(SlicePtrOrNull::Ptr(dev.clone_htod(&params)?))
+        let slice = dev.clone_htod(&params)?;
+        if untracked {
+            dev.cuda_stream().synchronize().w()?;
+        }
+        Ok(SlicePtrOrNull::Ptr(slice))
     }
 
     pub fn params_from_layout(dev: &CudaDevice, l: &Layout) -> Result<Self> {
