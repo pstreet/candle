@@ -1224,6 +1224,102 @@ impl Map2Any for Cmp {
     }
 }
 
+fn storage_len_elems(slice: &CudaStorageSlice) -> usize {
+    match slice {
+        CudaStorageSlice::U8(s) => s.len(),
+        CudaStorageSlice::U32(s) => s.len(),
+        CudaStorageSlice::I16(s) => s.len(),
+        CudaStorageSlice::I32(s) => s.len(),
+        CudaStorageSlice::I64(s) => s.len(),
+        CudaStorageSlice::BF16(s) => s.len(),
+        CudaStorageSlice::F16(s) => s.len(),
+        CudaStorageSlice::F32(s) => s.len(),
+        CudaStorageSlice::F64(s) => s.len(),
+        CudaStorageSlice::F8E4M3(s) => s.len(),
+        CudaStorageSlice::F6E2M3(s) => s.len(),
+        CudaStorageSlice::F6E3M2(s) => s.len(),
+        CudaStorageSlice::F4(s) => s.len(),
+        CudaStorageSlice::F8E8M0(s) => s.len(),
+    }
+}
+
+// Highest element index touched by a strided view. Saturates instead of
+// overflowing so a degenerate layout fails the range check below rather
+// than wrapping around.
+fn strided_footprint_max(dims: &[usize], strides: &[usize], start_offset: usize) -> usize {
+    let mut max = start_offset;
+    for (dim, stride) in dims.iter().zip(strides.iter()) {
+        if *dim == 0 {
+            return start_offset;
+        }
+        max = max.saturating_add(dim.saturating_sub(1).saturating_mul(*stride));
+    }
+    max
+}
+
+// Always-on host-side check for copy_strided_src: the kernel reads the
+// strided footprint start_offset + sum((dim-1)*stride), but the source it
+// is handed only covers the contiguous prefix. A layout whose footprint
+// escapes the storage would launch a wild read (fault-hunt class), so
+// refuse it loudly here instead.
+fn check_strided_copy_footprint(src: &CudaStorageSlice, src_l: &Layout) -> Result<()> {
+    if src_l.is_contiguous() {
+        return Ok(());
+    }
+    let max = strided_footprint_max(src_l.dims(), src_l.stride(), src_l.start_offset());
+    let len = storage_len_elems(src);
+    if max >= len {
+        crate::bail!(
+            "strided copy source out of range: max strided index {max} exceeds \
+             storage len {len} (dims {:?}, strides {:?}, start {})",
+            src_l.dims(),
+            src_l.stride(),
+            src_l.start_offset(),
+        );
+    }
+    Ok(())
+}
+
+// Armed-only (MISTRALRS_GATHER_GUARD=1): read back the dims/stride device
+// vector the kernel is about to consume and compare it against the host
+// layout. A mismatch means the params allocation was corrupted or went
+// stale between build and launch (fault-hunt class: garbage dims produce
+// wild strided reads on never-allocated VAs). Skipped during graph capture,
+// where DTOH is banned; the footprint check above still applies there.
+fn check_strided_copy_params(
+    dev: &CudaDevice,
+    ds: &SlicePtrOrNull<usize>,
+    src_l: &Layout,
+) -> Result<()> {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    if !*ENABLED.get_or_init(|| std::env::var("MISTRALRS_GATHER_GUARD").as_deref() == Ok("1")) {
+        return Ok(());
+    }
+    if src_l.is_contiguous() {
+        return Ok(());
+    }
+    let capturing = dev.cuda_stream().capture_status()
+        == Ok(cudarc::driver::sys::CUstreamCaptureStatus::CU_STREAM_CAPTURE_STATUS_ACTIVE);
+    if capturing {
+        return Ok(());
+    }
+    let expected: Vec<usize> = [src_l.dims(), src_l.stride()].concat();
+    let actual: Vec<usize> = match ds {
+        SlicePtrOrNull::Ptr(slice) => dev.cuda_stream().clone_dtoh(slice).w()?,
+        SlicePtrOrNull::Cached(slice) => dev.cuda_stream().clone_dtoh(slice.as_ref()).w()?,
+        SlicePtrOrNull::Null => return Ok(()),
+    };
+    if actual != expected {
+        let head: Vec<usize> = actual.iter().copied().take(8).collect();
+        crate::bail!(
+            "strided copy params mismatch: device dims/stride vector disagrees \
+             with host layout (expected {:?}, device head {head:?})",
+            expected,
+        );
+    }
+    Ok(())
+}
+
 fn slice_src_and_dst<'a, T>(
     src: &'a CudaSlice<T>,
     src_l: &Layout,
@@ -2427,9 +2523,17 @@ impl BackendStorage for CudaStorage {
         if el_count == 0 {
             return Ok(());
         }
+        // Host-side footprint check (always on, no sync): a noncontiguous
+        // view's strided footprint can extend past the contiguous prefix the
+        // kernel's sliced source covers. Bail loudly instead of launching a
+        // wild read (fault-hunt class: page-not-present on never-allocated VA).
+        check_strided_copy_footprint(&self.slice, src_l)?;
         let cfg = LaunchConfig::for_num_elems(el_count as u32);
         let dev = &self.device;
         let ds = SlicePtrOrNull::params_from_layout(dev, src_l)?;
+        // Armed-only params readback: the dims/stride device vector is read
+        // by the kernel, so verify what it will read matches the host layout.
+        check_strided_copy_params(dev, &ds, src_l)?;
         match (&self.slice, &mut dst.slice) {
             (CudaStorageSlice::BF16(src), CudaStorageSlice::BF16(dst)) => {
                 let (src, mut dst) = slice_src_and_dst(src, src_l, dst, dst_offset);
@@ -2969,4 +3073,35 @@ unsafe fn gemm_strided_batched_bf16(
         compute_type,
         sys::cublasGemmAlgo_t::CUBLAS_GEMM_DEFAULT_TENSOR_OP,
     )
+}
+
+#[cfg(test)]
+mod strided_copy_guard_tests {
+    use super::strided_footprint_max;
+
+    #[test]
+    fn contiguous_like_layout_stays_inside() {
+        assert_eq!(strided_footprint_max(&[4, 8], &[8, 1], 0), 31);
+    }
+
+    #[test]
+    fn strided_view_footprint_counts_gaps() {
+        // 2x2 view with stride 100 reaches index 101, not 3.
+        assert_eq!(strided_footprint_max(&[2, 2], &[100, 1], 0), 101);
+    }
+
+    #[test]
+    fn start_offset_shifts_footprint() {
+        assert_eq!(strided_footprint_max(&[4], &[2], 10), 16);
+    }
+
+    #[test]
+    fn degenerate_dims_do_not_wrap() {
+        assert_eq!(strided_footprint_max(&[], &[], 7), 7);
+        assert_eq!(strided_footprint_max(&[0, 4], &[99, 1], 7), 7);
+        assert_eq!(
+            strided_footprint_max(&[usize::MAX, 2], &[usize::MAX, 1], 0),
+            usize::MAX
+        );
+    }
 }
