@@ -86,14 +86,21 @@ impl SlicePtrOrNull<usize> {
         // disabled can read the vector before the copy lands - observed live
         // twice as garbage dims/stride vectors producing wild strided reads
         // on never-allocated VAs. With tracking on, same-stream ordering and
-        // event edges make the upload visible in time, so the sync below only
-        // runs in the regime where the safety net is off.
+        // event edges make the upload visible in time, so the settle sync
+        // below only runs in the regime where the safety net is off. It
+        // must ALSO skip an active capture: nothing executes while
+        // capturing, so no race is possible there - and a stream sync
+        // during capture is illegal (hip error 900, which poisoned a
+        // precapture the first version of this fix).
         let untracked = !dev.is_event_tracking();
+        let capturing = dev.cuda_stream().capture_status()
+            != Ok(cudarc::driver::sys::CUstreamCaptureStatus::CU_STREAM_CAPTURE_STATUS_NONE);
+        let settle = untracked && !capturing;
         if device::cuda_graph_htod_cache_enabled() {
             let key = (dev.id(), params.clone());
             let cache = CUDA_PARAM_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
             if let Some(slice) = cache.lock().unwrap().get(&key).cloned() {
-                if untracked {
+                if settle {
                     dev.cuda_stream().synchronize().w()?;
                 }
                 return Ok(SlicePtrOrNull::Cached(slice));
@@ -109,7 +116,7 @@ impl SlicePtrOrNull<usize> {
             }
 
             let slice = Arc::new(dev.cuda_stream().clone_htod(&params).w()?);
-            if untracked {
+            if settle {
                 // Settle the upload before publishing the entry: a second
                 // thread hitting the cache above must never observe a vector
                 // whose copy is still in flight.
@@ -121,7 +128,7 @@ impl SlicePtrOrNull<usize> {
         }
 
         let slice = dev.clone_htod(&params)?;
-        if untracked {
+        if settle {
             dev.cuda_stream().synchronize().w()?;
         }
         Ok(SlicePtrOrNull::Ptr(slice))
