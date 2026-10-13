@@ -33,6 +33,15 @@ pub unsafe fn alloc(size_bytes: usize) -> Result<sys::CUdeviceptr, DriverError> 
     Ok(ptr)
 }
 
+// Host-visible allocation ledger for GPU fault attribution (MRS_ALLOC_TRACE=1):
+// logs VA+len at alloc and VA at free for managed and pinned host memory. A
+// GPUVM page fault prints its faulting VA; matching it against FREE lines
+// names the freed buffer without a sanitizer.
+fn alloc_trace_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var("MRS_ALLOC_TRACE").as_deref() == Ok("1"))
+}
+
 pub unsafe fn alloc_async(
     size_bytes: usize,
     stream: sys::CUstream,
@@ -62,6 +71,9 @@ pub unsafe fn alloc_managed(size_bytes: usize) -> Result<sys::CUdeviceptr, Drive
         size_bytes,
         sys::HIP_MEM_ATTACH_GLOBAL,
     ))?;
+    if alloc_trace_enabled() {
+        eprintln!("[alloc-trace] ALLOC managed va={ptr:p} len={size_bytes}");
+    }
     Ok(ptr as sys::CUdeviceptr)
 }
 
@@ -70,6 +82,9 @@ pub unsafe fn alloc_managed(size_bytes: usize) -> Result<sys::CUdeviceptr, Drive
 /// # Safety
 /// The pointer must come from [alloc_managed] and not have been freed already.
 pub unsafe fn free_managed(ptr: sys::CUdeviceptr) -> Result<(), DriverError> {
+    if alloc_trace_enabled() {
+        eprintln!("[alloc-trace] FREE managed va=0x{ptr:x}");
+    }
     check(sys::hipFree(ptr))
 }
 
@@ -95,10 +110,16 @@ pub unsafe fn mem_prefetch_async(
 pub unsafe fn malloc_host(size_bytes: usize, flags: c_uint) -> Result<*mut c_void, DriverError> {
     let mut ptr: *mut c_void = std::ptr::null_mut();
     check(sys::hipHostAlloc(&mut ptr, size_bytes, flags))?;
+    if alloc_trace_enabled() {
+        eprintln!("[alloc-trace] ALLOC pinned va={ptr:p} len={size_bytes}");
+    }
     Ok(ptr)
 }
 
 pub unsafe fn free_host(ptr: *mut c_void) -> Result<(), DriverError> {
+    if alloc_trace_enabled() {
+        eprintln!("[alloc-trace] FREE pinned va={ptr:p}");
+    }
     check(sys::hipHostFree(ptr))
 }
 

@@ -1655,9 +1655,12 @@ impl CudaStream {
         self.end_capture_abort_if_active()?;
         self.ctx.bind_to_thread()?;
         unsafe {
+            // THREAD_LOCAL, not GLOBAL: a server captures decode graphs while
+            // other engines decode on their own streams; GLOBAL turns any
+            // concurrent device work anywhere into 905 isolation errors.
             result::stream::begin_capture(
                 self.cu_stream,
-                sys::CUstreamCaptureMode::CU_STREAM_CAPTURE_MODE_GLOBAL,
+                sys::CUstreamCaptureMode::CU_STREAM_CAPTURE_MODE_THREAD_LOCAL,
             )?;
         }
         self.capturing.store(1, Ordering::Relaxed);

@@ -825,8 +825,18 @@ impl CudaStream {
     fn begin_capture_common(&self) -> Result<(), DriverError> {
         self.end_capture_abort_if_active()?;
         self.inner.ctx.bind_to_thread()?;
+        // THREAD_LOCAL, not GLOBAL: a server captures decode graphs while
+        // other engines decode on their own streams. GLOBAL invalidates the
+        // capture (and poisons the other streams' ops with 905 isolation
+        // errors) when ANY thread does device work; THREAD_LOCAL only forbids
+        // the capturing thread's own unsafe ops, which is the actual
+        // invariant the capture needs. Cross-stream dependency violations
+        // still error loudly.
         unsafe {
-            result::begin_capture(self.inner.cu_stream, sys::CU_STREAM_CAPTURE_MODE_GLOBAL)?;
+            result::begin_capture(
+                self.inner.cu_stream,
+                sys::CU_STREAM_CAPTURE_MODE_THREAD_LOCAL,
+            )?;
         }
         self.inner.capturing.store(1, Ordering::Relaxed);
         Ok(())
