@@ -1146,6 +1146,36 @@ impl Map2 for WhereCond<'_> {
         let shape = ids_l.shape();
         let dims = shape.dims();
         let el = shape.elem_count();
+        // Always-on footprint checks (host-side, zero sync): a strided
+        // operand whose footprint escapes its storage would launch a wild
+        // read (fault-hunt class: where_u8_bf16 on a never-allocated VA).
+        if !ids_l.is_contiguous() {
+            check_strided_footprint(
+                "where condition",
+                ids_l.dims(),
+                ids_l.stride(),
+                ids_l.start_offset(),
+                storage_len_elems(&self.0.slice),
+            )?;
+        }
+        if !layout_t.is_contiguous() {
+            check_strided_footprint(
+                "where true branch",
+                layout_t.dims(),
+                layout_t.stride(),
+                layout_t.start_offset(),
+                t.len(),
+            )?;
+        }
+        if !layout_f.is_contiguous() {
+            check_strided_footprint(
+                "where false branch",
+                layout_f.dims(),
+                layout_f.stride(),
+                layout_f.start_offset(),
+                f.len(),
+            )?;
+        }
         let cfg = LaunchConfig::for_num_elems(el as u32);
         let ds = SlicePtrOrNull::params_from_vec(
             dev,
@@ -1182,6 +1212,27 @@ impl<U: crate::op::BinaryOpT> Map2 for U {
         let shape = lhs_l.shape();
         let dims = shape.dims();
         let elem_count = shape.elem_count();
+        // Always-on footprint checks (host-side, zero sync): same wild-read
+        // class as the strided copy (fault-hunt: bmul_bf16 on a
+        // never-allocated VA via garbage dims).
+        if !lhs_l.is_contiguous() {
+            check_strided_footprint(
+                "binary lhs",
+                lhs_l.dims(),
+                lhs_l.stride(),
+                lhs_l.start_offset(),
+                lhs.len(),
+            )?;
+        }
+        if !rhs_l.is_contiguous() {
+            check_strided_footprint(
+                "binary rhs",
+                rhs_l.dims(),
+                rhs_l.stride(),
+                rhs_l.start_offset(),
+                rhs.len(),
+            )?;
+        }
         let cfg = LaunchConfig::for_num_elems(elem_count as u32);
         let dims_and_strides = if lhs_l.is_contiguous() && rhs_l.is_contiguous() {
             SlicePtrOrNull::Null
@@ -1219,6 +1270,27 @@ impl Map2Any for Cmp {
         let shape = lhs_l.shape();
         let dims = shape.dims();
         let elem_count = shape.elem_count();
+        // Always-on footprint checks (host-side, zero sync): same wild-read
+        // class as the strided copy (fault-hunt: bmul_bf16 on a
+        // never-allocated VA via garbage dims).
+        if !lhs_l.is_contiguous() {
+            check_strided_footprint(
+                "binary lhs",
+                lhs_l.dims(),
+                lhs_l.stride(),
+                lhs_l.start_offset(),
+                lhs.len(),
+            )?;
+        }
+        if !rhs_l.is_contiguous() {
+            check_strided_footprint(
+                "binary rhs",
+                rhs_l.dims(),
+                rhs_l.stride(),
+                rhs_l.start_offset(),
+                rhs.len(),
+            )?;
+        }
         let cfg = LaunchConfig::for_num_elems(elem_count as u32);
         let dims_and_strides = if lhs_l.is_contiguous() && rhs_l.is_contiguous() {
             SlicePtrOrNull::Null
@@ -1284,6 +1356,27 @@ fn strided_footprint_max(dims: &[usize], strides: &[usize], start_offset: usize)
     max
 }
 
+// Always-on host-side range check shared by every strided kernel launch
+// site (copies, binaries, ternaries): the kernel reads the footprint
+// start + sum((dim-1)*stride), so refuse layouts that escape the storage
+// loudly instead of launching a wild read (fault-hunt class). Zero sync.
+fn check_strided_footprint(
+    name: &'static str,
+    dims: &[usize],
+    strides: &[usize],
+    start_offset: usize,
+    storage_len: usize,
+) -> Result<()> {
+    let max = strided_footprint_max(dims, strides, start_offset);
+    if max >= storage_len {
+        crate::bail!(
+            "{name} out of range: max strided index {max} exceeds storage \
+             len {storage_len} (dims {dims:?}, strides {strides:?}, start {start_offset})",
+        );
+    }
+    Ok(())
+}
+
 // Always-on host-side check for copy_strided_src: the kernel reads the
 // strided footprint start_offset + sum((dim-1)*stride), but the source it
 // is handed only covers the contiguous prefix. A layout whose footprint
@@ -1293,18 +1386,13 @@ fn check_strided_copy_footprint(src: &CudaStorageSlice, src_l: &Layout) -> Resul
     if src_l.is_contiguous() {
         return Ok(());
     }
-    let max = strided_footprint_max(src_l.dims(), src_l.stride(), src_l.start_offset());
-    let len = storage_len_elems(src);
-    if max >= len {
-        crate::bail!(
-            "strided copy source out of range: max strided index {max} exceeds \
-             storage len {len} (dims {:?}, strides {:?}, start {})",
-            src_l.dims(),
-            src_l.stride(),
-            src_l.start_offset(),
-        );
-    }
-    Ok(())
+    check_strided_footprint(
+        "strided copy source",
+        src_l.dims(),
+        src_l.stride(),
+        src_l.start_offset(),
+        storage_len_elems(src),
+    )
 }
 
 // Armed-only (MISTRALRS_GATHER_GUARD=1): read back the dims/stride device
