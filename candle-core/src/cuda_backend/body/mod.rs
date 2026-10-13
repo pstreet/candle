@@ -82,16 +82,17 @@ impl ScalarBuilderArg for crate::scalar::Scalar {
 impl SlicePtrOrNull<usize> {
     pub fn params_from_vec(dev: &CudaDevice, params: Vec<usize>) -> Result<Self> {
         // Fault-hunt: every upload below is async, and a consumer on another
-        // stream (loader threads, the capture fork) with event tracking
-        // disabled can read the vector before the copy lands - observed live
-        // twice as garbage dims/stride vectors producing wild strided reads
-        // on never-allocated VAs. With tracking on, same-stream ordering and
-        // event edges make the upload visible in time, so the settle sync
-        // below only runs in the regime where the safety net is off. It
-        // must ALSO skip an active capture: nothing executes while
-        // capturing, so no race is possible there - and a stream sync
-        // during capture is illegal (hip error 900, which poisoned a
-        // precapture the first version of this fix).
+        // stream (loader threads, the capture fork, the sampler's token
+        // ring) can read the vector before the copy lands - observed live
+        // three times as garbage dims/stride vectors producing wild
+        // strided reads on never-allocated VAs. The settle syncs below
+        // close the race: unconditional before cache publication (a second
+        // thread hitting the entry must never observe a copy in flight;
+        // runs once per unique layout), and on the uncached path wherever
+        // the event-tracking safety net is off. The capture window is
+        // excluded throughout: nothing executes while capturing, so no
+        // race is possible there - and a stream sync during capture is
+        // illegal (hip error 900).
         let untracked = !dev.is_event_tracking();
         let capturing = dev.cuda_stream().capture_status()
             != Ok(cudarc::driver::sys::CUstreamCaptureStatus::CU_STREAM_CAPTURE_STATUS_NONE);
@@ -100,9 +101,6 @@ impl SlicePtrOrNull<usize> {
             let key = (dev.id(), params.clone());
             let cache = CUDA_PARAM_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
             if let Some(slice) = cache.lock().unwrap().get(&key).cloned() {
-                if settle {
-                    dev.cuda_stream().synchronize().w()?;
-                }
                 return Ok(SlicePtrOrNull::Cached(slice));
             }
 
@@ -116,12 +114,13 @@ impl SlicePtrOrNull<usize> {
             }
 
             let slice = Arc::new(dev.cuda_stream().clone_htod(&params).w()?);
-            if settle {
-                // Settle the upload before publishing the entry: a second
-                // thread hitting the cache above must never observe a vector
-                // whose copy is still in flight.
-                dev.cuda_stream().synchronize().w()?;
-            }
+            // Settle the upload before publishing the entry: a second
+            // thread hitting the cache above must never observe a vector
+            // whose copy is still in flight (fault-hunt: garbage dims ->
+            // wild strided reads on never-allocated VAs). Unconditional:
+            // the consumer may live on another stream even with event
+            // tracking on, and this runs once per unique layout.
+            dev.cuda_stream().synchronize().w()?;
             let mut cache = cache.lock().unwrap();
             let slice = cache.entry(key).or_insert_with(|| slice).clone();
             return Ok(SlicePtrOrNull::Cached(slice));
