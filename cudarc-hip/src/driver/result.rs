@@ -30,13 +30,17 @@ pub fn check(err: i32) -> Result<(), DriverError> {
 pub unsafe fn alloc(size_bytes: usize) -> Result<sys::CUdeviceptr, DriverError> {
     let mut ptr: sys::CUdeviceptr = 0;
     check(sys::hipMalloc(&mut ptr, size_bytes))?;
+    if alloc_trace_enabled() {
+        eprintln!("[alloc-trace] ALLOC device va=0x{ptr:x} len={size_bytes}");
+    }
     Ok(ptr)
 }
 
 // Host-visible allocation ledger for GPU fault attribution (MRS_ALLOC_TRACE=1):
-// logs VA+len at alloc and VA at free for managed and pinned host memory. A
-// GPUVM page fault prints its faulting VA; matching it against FREE lines
-// names the freed buffer without a sanitizer.
+// logs VA+len at alloc and VA at free for device, managed, and pinned host
+// memory, plus GGUF mmap ranges (logged archive-side). A GPUVM page fault
+// prints its faulting VA; matching it against FREE lines names the freed
+// buffer without a sanitizer.
 fn alloc_trace_enabled() -> bool {
     static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ENABLED.get_or_init(|| std::env::var("MRS_ALLOC_TRACE").as_deref() == Ok("1"))
@@ -48,14 +52,23 @@ pub unsafe fn alloc_async(
 ) -> Result<sys::CUdeviceptr, DriverError> {
     let mut ptr: sys::CUdeviceptr = 0;
     check(sys::hipMallocAsync(&mut ptr, size_bytes, stream))?;
+    if alloc_trace_enabled() {
+        eprintln!("[alloc-trace] ALLOC device-async va=0x{ptr:x} len={size_bytes}");
+    }
     Ok(ptr)
 }
 
 pub unsafe fn free_sync(ptr: sys::CUdeviceptr) -> Result<(), DriverError> {
+    if alloc_trace_enabled() {
+        eprintln!("[alloc-trace] FREE device va=0x{ptr:x}");
+    }
     check(sys::hipFree(ptr))
 }
 
 pub unsafe fn free_async(ptr: sys::CUdeviceptr, stream: sys::CUstream) -> Result<(), DriverError> {
+    if alloc_trace_enabled() {
+        eprintln!("[alloc-trace] FREE device-async va=0x{ptr:x}");
+    }
     check(sys::hipFreeAsync(ptr, stream))
 }
 
