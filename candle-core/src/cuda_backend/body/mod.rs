@@ -3098,10 +3098,16 @@ unsafe fn gemm_strided_batched_f16_lt(
 
     if std::env::var("CANDLE_LT_DEBUG").is_ok() {
         eprintln!(
-            "LTMUL m={} n={} k={} heur_ws={} alloc_ws={}",
+            "LTMUL m={} n={} k={} lda={} ldb={} ldc={} A={:#x} B={:#x} C={:#x} heur_ws={} alloc_ws={}",
             m,
             n,
             k,
+            cfg.gemm.lda,
+            cfg.gemm.ldb,
+            cfg.gemm.ldc,
+            a,
+            b,
+            c,
             heuristic.workspace_size,
             blas_lt.workspace_size()
         );
