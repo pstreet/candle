@@ -556,6 +556,137 @@ unsafe fn matmul_unit_256(
     }
 }
 
+// Dedup decode unit: like matmul_unit_* but activations and output rows go
+// through per-pair indirection so pairs sharing an expert read its tiles once
+// for up to MAX_MT rows (draft-verify topk sets overlap heavily).
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f,avx512vnni,avx512bw")]
+#[allow(clippy::too_many_arguments)]
+unsafe fn indexed_gemv_unit_512(
+    packed: &PackedX86,
+    nt0: usize,
+    lhs_q: &[BlockQ8K],
+    rows: &[u32],
+    dst_rows: &[u32],
+    mt: usize,
+    kb: usize,
+    nt: usize,
+    dst_ptr: *mut f32,
+    n_out: usize,
+) {
+    use core::arch::x86_64::*;
+    let mut act_refs: [&BlockQ8K; kernels::MAX_MT] =
+        [&lhs_q[rows[0] as usize * kb]; kernels::MAX_MT];
+    let mut acc = [[_mm512_setzero_ps(); 1]; kernels::MAX_MT];
+    for b in 0..kb {
+        for (i, a) in act_refs.iter_mut().enumerate().take(mt) {
+            *a = &lhs_q[rows[i] as usize * kb + b];
+        }
+        match packed {
+            PackedX86::Q4K(tiles) => {
+                kernels::q4k_tile(&tiles[(nt0 + nt) * kb + b], &act_refs[..mt], &mut acc)
+            }
+            PackedX86::Q5K(tiles) => {
+                kernels::q5k_tile(&tiles[(nt0 + nt) * kb + b], &act_refs[..mt], &mut acc)
+            }
+            PackedX86::Q6K(tiles) => {
+                kernels::q6k_tile(&tiles[(nt0 + nt) * kb + b], &act_refs[..mt], &mut acc)
+            }
+            PackedX86::Q8_0(tiles) => {
+                for s in (0..8).step_by(2) {
+                    kernels::q8_0_tile2(
+                        &tiles[(nt0 + nt) * (kb * 8) + b * 8 + s],
+                        &tiles[(nt0 + nt) * (kb * 8) + b * 8 + s + 1],
+                        &act_refs[..mt],
+                        s,
+                        &mut acc,
+                    );
+                }
+            }
+        }
+    }
+    for (i, row) in acc[..mt].iter().enumerate() {
+        _mm512_storeu_ps(
+            dst_ptr.add(dst_rows[i] as usize * n_out + nt * TILE_N),
+            row[0],
+        );
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2,fma")]
+#[allow(clippy::too_many_arguments)]
+unsafe fn indexed_gemv_unit_256(
+    packed: &PackedX86,
+    nt0: usize,
+    lhs_q: &[BlockQ8K],
+    rows: &[u32],
+    dst_rows: &[u32],
+    mt: usize,
+    kb: usize,
+    nt: usize,
+    dst_ptr: *mut f32,
+    n_out: usize,
+    vnni: bool,
+) {
+    use core::arch::x86_64::*;
+    let mut act_refs: [&BlockQ8K; kernels::MAX_MT] =
+        [&lhs_q[rows[0] as usize * kb]; kernels::MAX_MT];
+    let mut acc = [[_mm256_setzero_ps(); 2]; kernels::MAX_MT];
+    for b in 0..kb {
+        for (i, a) in act_refs.iter_mut().enumerate().take(mt) {
+            *a = &lhs_q[rows[i] as usize * kb + b];
+        }
+        match packed {
+            PackedX86::Q4K(tiles) => {
+                let t = &tiles[(nt0 + nt) * kb + b];
+                if vnni {
+                    kernels256::q4k_tile_avxvnni(t, &act_refs[..mt], &mut acc)
+                } else {
+                    kernels256::q4k_tile_avx2(t, &act_refs[..mt], &mut acc)
+                }
+            }
+            PackedX86::Q5K(tiles) => {
+                let t = &tiles[(nt0 + nt) * kb + b];
+                if vnni {
+                    kernels256::q5k_tile_avxvnni(t, &act_refs[..mt], &mut acc)
+                } else {
+                    kernels256::q5k_tile_avx2(t, &act_refs[..mt], &mut acc)
+                }
+            }
+            PackedX86::Q6K(tiles) => {
+                let t = &tiles[(nt0 + nt) * kb + b];
+                if vnni {
+                    kernels256::q6k_tile_avxvnni(t, &act_refs[..mt], &mut acc)
+                } else {
+                    kernels256::q6k_tile_avx2(t, &act_refs[..mt], &mut acc)
+                }
+            }
+            PackedX86::Q8_0(tiles) => {
+                for s in (0..8).step_by(2) {
+                    kernels256::q8_0_tile2_avxvnni(
+                        &tiles[(nt0 + nt) * (kb * 8) + b * 8 + s],
+                        &tiles[(nt0 + nt) * (kb * 8) + b * 8 + s + 1],
+                        &act_refs[..mt],
+                        s,
+                        &mut acc,
+                    );
+                }
+            }
+        }
+    }
+    for (i, row) in acc[..mt].iter().enumerate() {
+        _mm256_storeu_ps(
+            dst_ptr.add(dst_rows[i] as usize * n_out + nt * TILE_N),
+            row[0],
+        );
+        _mm256_storeu_ps(
+            dst_ptr.add(dst_rows[i] as usize * n_out + nt * TILE_N + 8),
+            row[1],
+        );
+    }
+}
+
 pub(crate) fn matmul_tiles(
     packed: &PackedX86,
     nt0: usize,
@@ -624,7 +755,8 @@ pub(crate) fn pack(
     }
 }
 
-// Quantize lhs rows to BlockQ8K in parallel.
+// Quantize lhs rows to BlockQ8K in parallel; decode-sized batches run serially
+// (a pool region costs more than quantizing a handful of rows).
 pub(crate) fn quantize_lhs(lhs: &[f32], m: usize, k: usize) -> Vec<BlockQ8K> {
     let kb = k / QK_K;
     let mut out: Vec<BlockQ8K> = Vec::with_capacity(m * kb);
@@ -633,6 +765,15 @@ pub(crate) fn quantize_lhs(lhs: &[f32], m: usize, k: usize) -> Vec<BlockQ8K> {
         out.set_len(m * kb)
     };
     let out_ptr = out.as_mut_ptr() as usize;
+    if m <= 8 {
+        let out_ptr = out_ptr as *mut BlockQ8K;
+        for r in 0..m {
+            let row = &lhs[r * k..(r + 1) * k];
+            let dst = unsafe { std::slice::from_raw_parts_mut(out_ptr.add(r * kb), kb) };
+            BlockQ8K::from_float(row, dst);
+        }
+        return out;
+    }
     crate::utils::barrier_pool().execute_chunked(m, |range| {
         let out_ptr = out_ptr as *mut BlockQ8K;
         for r in range {
@@ -762,32 +903,82 @@ pub(crate) fn try_indexed_gemv(
         }
         return Ok(true);
     }
-    // The shared units index activations via m0, so the dst base is offset to land
-    // the store on the pair's row; pairs share one activation row when x_t == 1.
+    // Decode: group pairs by expert so shared experts read their tiles once for
+    // up to MAX_MT activation rows (draft-verify topk sets overlap heavily);
+    // activations and outputs go through per-pair indirection, no gather pass.
     let lv = level().expect("select() gated");
     let dst_ptr = dst.as_mut_ptr() as usize;
-    let total_units = n_pairs * nt_e;
+    let mut counts = vec![0u32; n_experts];
+    for &e in ids {
+        counts[e as usize] += 1;
+    }
+    // slots grouped by expert; experts: [expert, unit_start, slot_start, cnt]
+    let mut experts: Vec<[u32; 4]> = Vec::new();
+    let mut slot_base = vec![0u32; n_experts];
+    let mut row_of_slot = vec![0u32; n_pairs];
+    let mut pair_of_slot = vec![0u32; n_pairs];
+    let mut unit_total = 0u32;
+    let mut slot_total = 0u32;
+    for (e, &cnt) in counts.iter().enumerate() {
+        slot_base[e] = slot_total;
+        if cnt > 0 {
+            experts.push([e as u32, unit_total, slot_total, cnt]);
+            unit_total += cnt.div_ceil(kernels::MAX_MT as u32) * nt_e as u32;
+        }
+        slot_total += cnt;
+    }
+    let total_units = unit_total as usize;
+    let mut cursor = vec![0u32; n_experts];
+    for (pair, &e) in ids.iter().enumerate() {
+        let e = e as usize;
+        let slot = (slot_base[e] + cursor[e]) as usize;
+        cursor[e] += 1;
+        pair_of_slot[slot] = pair as u32;
+        row_of_slot[slot] = if n_rows == n_pairs {
+            pair as u32
+        } else {
+            (pair / topk) as u32
+        };
+    }
     crate::utils::barrier_pool().execute_chunked(total_units, |range| {
         let dst_ptr = dst_ptr as *mut f32;
         for unit in range {
-            let pair = unit / nt_e;
-            let nt = unit % nt_e;
-            let e = ids[pair] as usize;
-            let row = if n_rows == n_pairs { pair } else { pair / topk };
-            let out = unsafe { dst_ptr.add((pair - row) * n_out) };
+            let d = experts[experts.partition_point(|x| x[1] <= unit as u32) - 1];
+            let e = d[0] as usize;
+            let cnt = d[3] as usize;
+            let m_chunks = cnt.div_ceil(kernels::MAX_MT);
+            let rem = unit as u32 - d[1];
+            let nt = (rem as usize) / m_chunks;
+            let mc = (rem as usize) % m_chunks;
+            let s0 = d[2] as usize + mc * kernels::MAX_MT;
+            let mt = (cnt - mc * kernels::MAX_MT).min(kernels::MAX_MT);
+            let rows = &row_of_slot[s0..s0 + mt];
+            let dst_rows = &pair_of_slot[s0..s0 + mt];
             unsafe {
                 if lv == X86Level::Avx512Vnni {
-                    matmul_unit_512(packed, e * nt_e, &lhs_q, kb, nt, row, 1, out, n_out);
-                } else {
-                    matmul_unit_256(
+                    indexed_gemv_unit_512(
                         packed,
                         e * nt_e,
                         &lhs_q,
+                        rows,
+                        dst_rows,
+                        mt,
                         kb,
                         nt,
-                        row,
-                        1,
-                        out,
+                        dst_ptr,
+                        n_out,
+                    );
+                } else {
+                    indexed_gemv_unit_256(
+                        packed,
+                        e * nt_e,
+                        &lhs_q,
+                        rows,
+                        dst_rows,
+                        mt,
+                        kb,
+                        nt,
+                        dst_ptr,
                         n_out,
                         lv == X86Level::AvxVnni,
                     );

@@ -1238,7 +1238,14 @@ impl QTensor {
             let slice = cpu.as_slice::<f32>()?;
             &slice[offset..offset + n_rows * k]
         };
-        let mut dst = vec![0f32; batch * topk * n_out];
+        // Every element is written by the units when the path serves (all pairs
+        // x all n-tiles covered); discarded untouched when it does not.
+        let mut dst: Vec<f32> = Vec::with_capacity(batch * topk * n_out);
+        #[allow(clippy::uninit_vec)]
+        unsafe {
+            dst.set_len(batch * topk * n_out)
+        };
+        let census = moe_census_enabled().then(std::time::Instant::now);
         let ok = repack::try_indexed_gemv(
             storage.as_ref(),
             &self.repacked_qs,
@@ -1251,6 +1258,9 @@ impl QTensor {
             topk,
             &mut dst,
         )?;
+        if let Some(t0) = census {
+            moe_census(&ids_v, t0.elapsed());
+        }
         drop(guard);
         if !ok {
             return Ok(None);
@@ -1264,7 +1274,47 @@ impl QTensor {
     }
 }
 
+// TEMP (2026-10-17): rolling shape/latency census for the expert-split lane.
+// CANDLE_MOE_CENSUS=1 prints one stderr line per 512 indexed_gemv calls.
+fn moe_census_enabled() -> bool {
+    static E: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *E.get_or_init(|| std::env::var("CANDLE_MOE_CENSUS").as_deref() == Ok("1"))
+}
+
+fn moe_census(ids: &[u32], dur: std::time::Duration) {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static CALLS: AtomicU64 = AtomicU64::new(0);
+    static NS: AtomicU64 = AtomicU64::new(0);
+    static PAIRS: AtomicU64 = AtomicU64::new(0);
+    static DISTINCT: AtomicU64 = AtomicU64::new(0);
+    let distinct = {
+        let mut seen = std::collections::HashSet::new();
+        seen.extend(ids.iter().copied());
+        seen.len()
+    };
+    let n = CALLS.fetch_add(1, Ordering::Relaxed) + 1;
+    PAIRS.fetch_add(ids.len() as u64, Ordering::Relaxed);
+    DISTINCT.fetch_add(distinct as u64, Ordering::Relaxed);
+    NS.fetch_add(dur.as_nanos() as u64, Ordering::Relaxed);
+    if n.is_multiple_of(512) {
+        eprintln!(
+            "MOE_CENSUS calls={n} avg_pairs={} avg_distinct={} avg_us={:.1}",
+            PAIRS.load(Ordering::Relaxed) / n,
+            DISTINCT.load(Ordering::Relaxed) / n,
+            NS.load(Ordering::Relaxed) as f64 / n as f64 / 1e3
+        );
+        CALLS.store(0, Ordering::Relaxed);
+        NS.store(0, Ordering::Relaxed);
+        PAIRS.store(0, Ordering::Relaxed);
+        DISTINCT.store(0, Ordering::Relaxed);
+    }
+}
+
 fn widen_bf16(src: &[half::bf16]) -> Vec<f32> {
+    // decode-sized buffers convert serially: a pool region costs more than the work
+    if src.len() <= WIDEN_CHUNK {
+        return src.iter().map(|v| v.to_f32()).collect();
+    }
     let mut out: Vec<f32> = Vec::with_capacity(src.len());
     let out_ptr = out.as_mut_ptr() as usize;
     let n_units = src.len().div_ceil(WIDEN_CHUNK);
@@ -1284,6 +1334,9 @@ fn widen_bf16(src: &[half::bf16]) -> Vec<f32> {
 }
 
 fn narrow_bf16(src: &[f32]) -> Vec<half::bf16> {
+    if src.len() <= WIDEN_CHUNK {
+        return src.iter().map(|v| half::bf16::from_f32(*v)).collect();
+    }
     let mut out: Vec<half::bf16> = Vec::with_capacity(src.len());
     let out_ptr = out.as_mut_ptr() as usize;
     let n_units = src.len().div_ceil(WIDEN_CHUNK);

@@ -1759,3 +1759,57 @@ fn indexed_gemv_bf16_lhs() -> Result<()> {
     );
     Ok(())
 }
+
+// Perf probe for the expert-split lane: real Qwen3.6-35B expert shapes (Q8_0,
+// 64 experts, gate_up [4096, 2048], down [2048, 2048]) at the MTP decode shape
+// (3 shared lhs rows x topk 8 = 24 pairs). Reports ms/call and effective GB/s
+// over the raw bytes of the touched experts. Run:
+//   cargo test --release -p candle-core --test quantized_tests -- --ignored moe_bench
+#[test]
+#[ignore]
+fn moe_bench() -> Result<()> {
+    let dev = Device::Cpu;
+    let n_experts = 64usize;
+    let topk = 8usize;
+    let rows = 3usize;
+    let shapes = [(4096usize, 2048usize), (2048, 2048)];
+    for (n_out, k) in shapes {
+        let w = Tensor::rand(-1f32, 1f32, (n_experts, n_out, k), &dev)?;
+        let qt = quantized::QTensor::quantize(&w, GgmlDType::Q8_0)?;
+        drop(w);
+        let x = Tensor::rand(-1f32, 1f32, (rows, 1, k), &dev)?;
+        // draft-verify routing: 3 positions x 8 experts with partial overlap
+        let ids: Vec<u32> = (0..rows * topk)
+            .map(|i| ((i * 11 + 7) as u32 + (i / topk) as u32 * 3) % n_experts as u32)
+            .collect();
+        let ids_t = Tensor::from_vec(ids.clone(), (rows, topk), &dev)?;
+        // warmup (packs tiles) then time
+        let _ = qt.indexed_gemv(&x, &ids_t)?.expect("served");
+        let iters = 50;
+        let start = std::time::Instant::now();
+        for _ in 0..iters {
+            let _ = qt.indexed_gemv(&x, &ids_t)?.expect("served");
+        }
+        let per_call_ms = start.elapsed().as_secs_f32() / iters as f32 * 1e3;
+        let distinct = ids.iter().collect::<std::collections::HashSet<_>>().len();
+        // raw Q8_0 bytes per touched expert row set: n_out * k * (34/32)
+        let bytes = distinct as f64 * n_out as f64 * k as f64 * 34.0 / 32.0;
+        println!(
+            "moe_bench n_out={n_out} k={k}: {per_call_ms:.3} ms/call, {distinct} distinct experts, {:.1} GB/s per-distinct",
+            bytes / (per_call_ms / 1e3) as f64 / 1e9
+        );
+        // overlapping routing: all 3 positions share one topk set (8 distinct)
+        let ids2: Vec<u32> = (0..rows * topk).map(|i| ((i % topk) % 8) as u32).collect();
+        let ids2_t = Tensor::from_vec(ids2, (rows, topk), &dev)?;
+        let _ = qt.indexed_gemv(&x, &ids2_t)?.expect("served");
+        let start = std::time::Instant::now();
+        for _ in 0..iters {
+            let _ = qt.indexed_gemv(&x, &ids2_t)?.expect("served");
+        }
+        let per_call_ms = start.elapsed().as_secs_f32() / iters as f32 * 1e3;
+        println!(
+            "moe_bench n_out={n_out} k={k} OVERLAP (8 distinct of 24 pairs): {per_call_ms:.3} ms/call"
+        );
+    }
+    Ok(())
+}
