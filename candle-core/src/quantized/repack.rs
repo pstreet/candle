@@ -251,7 +251,7 @@ pub(crate) fn try_matmul_f32(
         let tiles = packed
             .x86
             .get_or_init(|| super::repack_x86::pack(dtype, storage, n, k));
-        super::repack_x86::matmul_tiles(tiles, &lhs_q, m, k, n, dst);
+        super::repack_x86::matmul_tiles(tiles, 0, &lhs_q, m, k, n, dst);
         Ok(true)
     }
 
@@ -963,7 +963,6 @@ define_indexed_gemv!(
 #[cfg(target_arch = "aarch64")]
 const INDEXED_BUCKET_MIN_PAIRS: usize = 32;
 
-#[cfg(target_arch = "aarch64")]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn try_indexed_gemv(
     storage: &dyn QuantizedType,
@@ -1052,7 +1051,13 @@ pub(crate) fn try_indexed_gemv(
             _ => Ok(false),
         }
     }
-    #[cfg(not(target_arch = "aarch64"))]
+    #[cfg(target_arch = "x86_64")]
+    {
+        super::repack_x86::try_indexed_gemv(
+            storage, cache, n_experts, n_out, k, lhs, n_rows, ids, topk, dst,
+        )
+    }
+    #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
     {
         let _ = (
             storage, cache, n_experts, n_out, k, lhs, n_rows, ids, topk, dst,

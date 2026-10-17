@@ -1669,3 +1669,93 @@ fn bf16_lhs_matmul_matches_f32() -> Result<()> {
     }
     Ok(())
 }
+
+// Indexed (MoE) gemv against a dequantized-weights reference so only the kernel
+// arithmetic is under test, not the quantization error. Returns whether the
+// packed path served the shape.
+fn run_indexed_gemv_case(
+    dtype: GgmlDType,
+    (batch, x_t, topk): (usize, usize, usize),
+    lhs_dtype: DType,
+) -> Result<bool> {
+    let dev = Device::Cpu;
+    let (n_experts, n_out, k) = (8usize, 64usize, 512usize);
+    let w = Tensor::rand(-1f32, 1f32, (n_experts, n_out, k), &dev)?;
+    let qt = quantized::QTensor::quantize(&w, dtype)?;
+    let w = qt.dequantize(&dev)?.to_vec3::<f32>()?;
+    let mut x = Tensor::rand(-1f32, 1f32, (batch, x_t, k), &dev)?.to_dtype(lhs_dtype)?;
+    if lhs_dtype != DType::F32 {
+        // model the bf16 round-trip the kernel widens from
+        x = x
+            .to_dtype(DType::F32)?
+            .to_dtype(lhs_dtype)?
+            .to_dtype(DType::F32)?;
+    }
+    // reference lhs mirrors what the kernel consumes: q8k per superblock
+    let mut xq = x.flatten_all()?.to_vec1::<f32>()?;
+    for row in xq.chunks_mut(k) {
+        let mut blocks = vec![k_quants::BlockQ8K::zeros(); k / k_quants::QK_K];
+        k_quants::BlockQ8K::from_float(row, &mut blocks);
+        let mut deq = vec![0f32; k];
+        k_quants::BlockQ8K::to_float(&blocks, &mut deq);
+        row.copy_from_slice(&deq);
+    }
+    let xq_t = Tensor::from_vec(xq, (batch, x_t, k), &dev)?;
+    let ids: Vec<u32> = (0..batch * topk)
+        .map(|i| (i * 7 + 3) as u32 % n_experts as u32)
+        .collect();
+    let ids_t = Tensor::from_vec(ids.clone(), (batch, topk), &dev)?;
+    let Some(out) = qt.indexed_gemv(&xq_t, &ids_t)? else {
+        return Ok(false);
+    };
+    let out = out.to_dtype(DType::F32)?.to_vec3::<f32>()?;
+    let xq = xq_t.to_vec3::<f32>()?;
+    let n_rows = batch * x_t;
+    let n_pairs = batch * topk;
+    for (pair, &e) in ids.iter().enumerate() {
+        let row = if n_rows == n_pairs { pair } else { pair / topk };
+        let xr = &xq[row / x_t][row % x_t];
+        for o in 0..n_out {
+            let wr = &w[e as usize][o];
+            let want: f32 = wr.iter().zip(xr).map(|(w, x)| w * x).sum();
+            let got = out[pair / topk][pair % topk][o];
+            assert!(
+                (got - want).abs() <= 1e-3 * (1.0 + want.abs()),
+                "{dtype:?} b={batch} xt={x_t} pair={pair} o={o}: got {got} want {want}"
+            );
+        }
+    }
+    Ok(true)
+}
+
+#[test]
+fn indexed_gemv_matches_dequant_reference() -> Result<()> {
+    for dtype in [
+        GgmlDType::Q4K,
+        GgmlDType::Q5K,
+        GgmlDType::Q6K,
+        GgmlDType::Q8_0,
+    ] {
+        // q8_0 stays lenient: select() excludes it on avx2-only hosts
+        let strict = cfg!(target_arch = "x86_64") && dtype != GgmlDType::Q8_0;
+
+        let served = run_indexed_gemv_case(dtype, (3, 1, 4), DType::F32)?;
+        assert!(!strict || served, "{dtype:?} decode not served on x86_64");
+
+        run_indexed_gemv_case(dtype, (2, 4, 4), DType::F32)?;
+
+        let served = run_indexed_gemv_case(dtype, (24, 1, 2), DType::F32)?;
+        assert!(!strict || served, "{dtype:?} bucket not served on x86_64");
+    }
+    Ok(())
+}
+
+#[test]
+fn indexed_gemv_bf16_lhs() -> Result<()> {
+    let served = run_indexed_gemv_case(GgmlDType::Q5K, (3, 1, 4), DType::BF16)?;
+    assert!(
+        !cfg!(target_arch = "x86_64") || served,
+        "Q5K bf16 decode not served on x86_64"
+    );
+    Ok(())
+}
