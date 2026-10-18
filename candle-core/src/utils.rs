@@ -302,6 +302,12 @@ impl BarrierPool {
             f(0..n_items);
             return;
         }
+        // Small batches: waking the whole pool costs more than the work itself.
+        // Run serially on the calling thread to avoid barrier wake/sleep overhead.
+        if n_items <= self.threads.len() * 16 {
+            f(0..n_items);
+            return;
+        }
         let n_threads = self.threads.len() + 1;
         // ~8 grabs per thread amortizes cursor contention while keeping tail imbalance small
         let chunk = n_items.div_ceil(n_threads * 8).max(1);
