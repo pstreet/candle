@@ -1301,6 +1301,125 @@ impl QTensor {
             Ok(Some(out))
         }
     }
+
+    /// Fused gate+up indexed gemv: quantizes `x` once and computes both
+    /// projections. Returns None when unsupported.
+    #[cfg(target_arch = "x86_64")]
+    pub fn indexed_gemv_fused_gate_up(
+        gate: &Self,
+        up: &Self,
+        x: &Tensor,
+        ids: &Tensor,
+    ) -> Result<Option<(Tensor, Tensor)>> {
+        if !x.device().is_cpu()
+            || !matches!(x.dtype(), crate::DType::F32 | crate::DType::BF16)
+            || !x.is_contiguous()
+        {
+            return Ok(None);
+        }
+        let Ok((n_experts, n_out_g, k)) = gate.shape.dims3() else {
+            return Ok(None);
+        };
+        let Ok((_, n_out_u, k2)) = up.shape.dims3() else {
+            return Ok(None);
+        };
+        if k2 != k || n_out_u != n_out_g {
+            return Ok(None);
+        }
+        let Ok((batch, x_t, xk)) = x.dims3() else {
+            return Ok(None);
+        };
+        let Ok((ids_b, topk)) = ids.dims2() else {
+            return Ok(None);
+        };
+        if xk != k || ids_b != batch || (x_t != 1 && x_t != topk) {
+            return Ok(None);
+        }
+        let (QStorage::Cpu(g_storage), QStorage::Cpu(u_storage)) = (&gate.storage, &up.storage)
+        else {
+            return Ok(None);
+        };
+        let ids_v: Vec<u32> = ids
+            .to_dtype(crate::DType::U32)?
+            .flatten_all()?
+            .to_vec1::<u32>()?;
+        if ids_v.iter().any(|&e| e as usize >= n_experts) {
+            crate::bail!("expert index out of range");
+        }
+        let guard = x.storage();
+        let crate::Storage::Cpu(cpu) = &*guard else {
+            return Ok(None);
+        };
+        let offset = x.layout().start_offset();
+        let n_rows = batch * x_t;
+        let widened;
+        let lhs: &[f32] = if x.dtype() == crate::DType::BF16 {
+            let bslice = cpu.as_slice::<half::bf16>()?;
+            widened = widen_bf16(&bslice[offset..offset + n_rows * k]);
+            &widened
+        } else {
+            let slice = cpu.as_slice::<f32>()?;
+            &slice[offset..offset + n_rows * k]
+        };
+        let lhs_q = repack_x86::quantize_lhs(lhs, n_rows, k);
+        // Gate
+        let mut dst_g: Vec<f32> = Vec::with_capacity(batch * topk * n_out_g);
+        unsafe { dst_g.set_len(batch * topk * n_out_g) };
+        let ok_g = repack_x86::try_indexed_gemv_q(
+            g_storage.as_ref(),
+            &gate.repacked_qs,
+            n_experts,
+            n_out_g,
+            k,
+            &lhs_q,
+            n_rows,
+            &ids_v,
+            topk,
+            &mut dst_g,
+        )?;
+        if !ok_g {
+            return Ok(None);
+        }
+        // Up
+        let mut dst_u: Vec<f32> = Vec::with_capacity(batch * topk * n_out_u);
+        unsafe { dst_u.set_len(batch * topk * n_out_u) };
+        let ok_u = repack_x86::try_indexed_gemv_q(
+            u_storage.as_ref(),
+            &up.repacked_qs,
+            n_experts,
+            n_out_u,
+            k,
+            &lhs_q,
+            n_rows,
+            &ids_v,
+            topk,
+            &mut dst_u,
+        )?;
+        if !ok_u {
+            return Ok(None);
+        }
+        drop(guard);
+        let gate_out = Tensor::from_vec(dst_g, (batch, topk, n_out_g), &crate::Device::Cpu)?;
+        let up_out = Tensor::from_vec(dst_u, (batch, topk, n_out_u), &crate::Device::Cpu)?;
+        if x.dtype() == crate::DType::BF16 {
+            Ok(Some((
+                gate_out.to_dtype(crate::DType::BF16)?,
+                up_out.to_dtype(crate::DType::BF16)?,
+            )))
+        } else {
+            Ok(Some((gate_out, up_out)))
+        }
+    }
+
+    #[cfg(not(target_arch = "x86_64"))]
+    pub fn indexed_gemv_fused_gate_up(
+        _gate: &Self,
+        _up: &Self,
+        _x: &Tensor,
+        _ids: &Tensor,
+    ) -> Result<Option<(Tensor, Tensor)>> {
+        Ok(None)
+    }
 }
 
 // TEMP (2026-10-17): rolling shape/latency census for the expert-split lane.

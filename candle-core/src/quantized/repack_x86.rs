@@ -757,7 +757,7 @@ pub(crate) fn pack(
 
 // Quantize lhs rows to BlockQ8K in parallel; decode-sized batches run serially
 // (a pool region costs more than quantizing a handful of rows).
-pub(crate) fn quantize_lhs(lhs: &[f32], m: usize, k: usize) -> Vec<BlockQ8K> {
+pub fn quantize_lhs(lhs: &[f32], m: usize, k: usize) -> Vec<BlockQ8K> {
     let kb = k / QK_K;
     let mut out: Vec<BlockQ8K> = Vec::with_capacity(m * kb);
     #[allow(clippy::uninit_vec)]
@@ -860,12 +860,30 @@ pub(crate) fn try_indexed_gemv(
     topk: usize,
     dst: &mut [f32],
 ) -> crate::Result<bool> {
+    let lhs_q = quantize_lhs(lhs, n_rows, k);
+    try_indexed_gemv_q(
+        storage, cache, n_experts, n_out, k, &lhs_q, n_rows, ids, topk, dst,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn try_indexed_gemv_q(
+    storage: &dyn QuantizedType,
+    cache: &super::repack::PackedCache,
+    n_experts: usize,
+    n_out: usize,
+    k: usize,
+    lhs_q: &[BlockQ8K],
+    n_rows: usize,
+    ids: &[u32],
+    topk: usize,
+    dst: &mut [f32],
+) -> crate::Result<bool> {
     let dtype = storage.dtype();
     if !select(dtype, n_experts * n_out, k) || !n_out.is_multiple_of(TILE_N) {
         return Ok(false);
     }
     let packed = cache.x86_get_or_init(|| pack(dtype, storage, n_experts * n_out, k));
-    let lhs_q = quantize_lhs(lhs, n_rows, k);
     let kb = k / QK_K;
     let nt_e = n_out / TILE_N;
     let n_pairs = ids.len();
