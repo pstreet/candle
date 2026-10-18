@@ -1760,6 +1760,43 @@ fn indexed_gemv_bf16_lhs() -> Result<()> {
     Ok(())
 }
 
+#[test]
+fn indexed_gemv_fused_gate_up_matches_separate() -> Result<()> {
+    let dev = Device::Cpu;
+    let (n_experts, n_out, k) = (8usize, 64usize, 512usize);
+    for dtype in [GgmlDType::Q4K, GgmlDType::Q5K, GgmlDType::Q6K, GgmlDType::Q8_0] {
+        let w_gate = Tensor::rand(-1f32, 1f32, (n_experts, n_out, k), &dev)?;
+        let w_up = Tensor::rand(-1f32, 1f32, (n_experts, n_out, k), &dev)?;
+        let qt_gate = quantized::QTensor::quantize(&w_gate, dtype)?;
+        let qt_up = quantized::QTensor::quantize(&w_up, dtype)?;
+        let batch = 3usize;
+        let topk = 4usize;
+        let x = Tensor::rand(-1f32, 1f32, (batch, 1, k), &dev)?;
+        let ids: Vec<u32> = (0..batch * topk)
+            .map(|i| (i * 7 + 3) as u32 % n_experts as u32)
+            .collect();
+        let ids_t = Tensor::from_vec(ids.clone(), (batch, topk), &dev)?;
+        // Separate
+        let sep_g = qt_gate.indexed_gemv(&x, &ids_t)?;
+        let sep_u = qt_up.indexed_gemv(&x, &ids_t)?;
+        // Fused
+        let fused = quantized::QTensor::indexed_gemv_fused_gate_up(&qt_gate, &qt_up, &x, &ids_t)?;
+        if let (Some(sg), Some(su), Some((fg, fu))) = (sep_g, sep_u, fused) {
+            let sg = sg.to_dtype(DType::F32)?;
+            let su = su.to_dtype(DType::F32)?;
+            let fg = fg.to_dtype(DType::F32)?;
+            let fu = fu.to_dtype(DType::F32)?;
+            let dg = (&sg - &fg)?.abs()?.max_all()?.to_scalar::<f32>()?;
+            let du = (&su - &fu)?.abs()?.max_all()?.to_scalar::<f32>()?;
+            let scale_g = sg.abs()?.max_all()?.to_scalar::<f32>()?.max(1.0);
+            let scale_u = su.abs()?.max_all()?.to_scalar::<f32>()?.max(1.0);
+            assert!(dg / scale_g < 1e-4, "{dtype:?}: gate rel diff {}", dg / scale_g);
+            assert!(du / scale_u < 1e-4, "{dtype:?}: up rel diff {}", du / scale_u);
+        }
+    }
+    Ok(())
+}
+
 // Perf probe for the expert-split lane: real Qwen3.6-35B expert shapes (Q8_0,
 // 64 experts, gate_up [4096, 2048], down [2048, 2048]) at the MTP decode shape
 // (3 shared lhs rows x topk 8 = 24 pairs). Reports ms/call and effective GB/s
