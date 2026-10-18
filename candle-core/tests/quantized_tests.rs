@@ -144,6 +144,10 @@ fn quantized_matmul(device: &Device) -> Result<()> {
                 [341876.0, 994283.0, 1655709.0, 2301518.0]
             ]
         ),
+        // No Hip golden values and no Hip entries in the `test_device!` macro; this
+        // arm exists only for match exhaustiveness on the local Hip-enabled fork.
+        #[cfg(feature = "rocm")]
+        Device::Hip(_) => todo!("no Hip golden values for quantized_matmul"),
     }
     test_matmul(device, (1, 3, 4, 256), GgmlDType::Q4_0)?;
     Ok(())
@@ -208,6 +212,10 @@ fn quantized_matmul_neg(device: &Device) -> Result<()> {
                 [-196472.0, 63012.0, 324585.0, 587902.0]
             ]
         ),
+        // No Hip golden values and no Hip entries in the `test_device!` macro; this
+        // arm exists only for match exhaustiveness on the local Hip-enabled fork.
+        #[cfg(feature = "rocm")]
+        Device::Hip(_) => todo!("no Hip golden values for quantized_matmul_neg"),
     }
     let lhs2 = Tensor::stack(&[&lhs, &lhs], 0)?;
     let res2 = matmul.forward(&lhs2)?;
@@ -1764,7 +1772,12 @@ fn indexed_gemv_bf16_lhs() -> Result<()> {
 fn indexed_gemv_fused_gate_up_matches_separate() -> Result<()> {
     let dev = Device::Cpu;
     let (n_experts, n_out, k) = (8usize, 64usize, 512usize);
-    for dtype in [GgmlDType::Q4K, GgmlDType::Q5K, GgmlDType::Q6K, GgmlDType::Q8_0] {
+    for dtype in [
+        GgmlDType::Q4K,
+        GgmlDType::Q5K,
+        GgmlDType::Q6K,
+        GgmlDType::Q8_0,
+    ] {
         let w_gate = Tensor::rand(-1f32, 1f32, (n_experts, n_out, k), &dev)?;
         let w_up = Tensor::rand(-1f32, 1f32, (n_experts, n_out, k), &dev)?;
         let qt_gate = quantized::QTensor::quantize(&w_gate, dtype)?;
@@ -1790,8 +1803,16 @@ fn indexed_gemv_fused_gate_up_matches_separate() -> Result<()> {
             let du = (&su - &fu)?.abs()?.max_all()?.to_scalar::<f32>()?;
             let scale_g = sg.abs()?.max_all()?.to_scalar::<f32>()?.max(1.0);
             let scale_u = su.abs()?.max_all()?.to_scalar::<f32>()?.max(1.0);
-            assert!(dg / scale_g < 1e-4, "{dtype:?}: gate rel diff {}", dg / scale_g);
-            assert!(du / scale_u < 1e-4, "{dtype:?}: up rel diff {}", du / scale_u);
+            assert!(
+                dg / scale_g < 1e-4,
+                "{dtype:?}: gate rel diff {}",
+                dg / scale_g
+            );
+            assert!(
+                du / scale_u < 1e-4,
+                "{dtype:?}: up rel diff {}",
+                du / scale_u
+            );
         }
     }
     Ok(())

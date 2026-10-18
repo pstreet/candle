@@ -1270,7 +1270,6 @@ impl QTensor {
         unsafe {
             dst.set_len(batch * topk * n_out)
         };
-        let census = moe_census_enabled().then(std::time::Instant::now);
         let ok = repack::try_indexed_gemv(
             storage.as_ref(),
             &self.repacked_qs,
@@ -1283,13 +1282,6 @@ impl QTensor {
             topk,
             &mut dst,
         )?;
-        if let Some(t0) = census {
-            moe_census(
-                storage.as_ref() as *const dyn QuantizedType as *const (),
-                &ids_v,
-                t0.elapsed(),
-            );
-        }
         drop(guard);
         if !ok {
             return Ok(None);
@@ -1419,115 +1411,6 @@ impl QTensor {
         _ids: &Tensor,
     ) -> Result<Option<(Tensor, Tensor)>> {
         Ok(None)
-    }
-}
-
-// TEMP (2026-10-17): rolling shape/latency census for the expert-split lane.
-// CANDLE_MOE_CENSUS=1 prints one stderr line per 512 indexed_gemv calls, plus
-// per-tensor expert popularity windows every 4096 calls (keyed by QTensor
-// identity) for hot-cache sizing.
-fn moe_census_enabled() -> bool {
-    static E: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *E.get_or_init(|| std::env::var("CANDLE_MOE_CENSUS").as_deref() == Ok("1"))
-}
-
-type CensusHists = std::sync::Mutex<std::collections::HashMap<usize, Vec<u32>>>;
-
-fn moe_census(qtensor: *const (), ids: &[u32], dur: std::time::Duration) {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static CALLS: AtomicU64 = AtomicU64::new(0);
-    static NS: AtomicU64 = AtomicU64::new(0);
-    static PAIRS: AtomicU64 = AtomicU64::new(0);
-    static DISTINCT: AtomicU64 = AtomicU64::new(0);
-    static HISTS: std::sync::OnceLock<CensusHists> = std::sync::OnceLock::new();
-    let hists = HISTS.get_or_init(Default::default);
-    {
-        let mut hists = hists.lock().unwrap();
-        let hist = hists.entry(qtensor as usize).or_default();
-        if let Some(&max) = ids.iter().max() {
-            if hist.len() <= max as usize {
-                hist.resize(max as usize + 1, 0);
-            }
-        }
-        for &e in ids {
-            hist[e as usize] += 1;
-        }
-    }
-    let distinct = {
-        let mut seen = std::collections::HashSet::new();
-        seen.extend(ids.iter().copied());
-        seen.len()
-    };
-    let n = CALLS.fetch_add(1, Ordering::Relaxed) + 1;
-    PAIRS.fetch_add(ids.len() as u64, Ordering::Relaxed);
-    DISTINCT.fetch_add(distinct as u64, Ordering::Relaxed);
-    NS.fetch_add(dur.as_nanos() as u64, Ordering::Relaxed);
-    if n.is_multiple_of(512) {
-        eprintln!(
-            "MOE_CENSUS calls={n} avg_pairs={} avg_distinct={} avg_us={:.1}",
-            PAIRS.load(Ordering::Relaxed) / n,
-            DISTINCT.load(Ordering::Relaxed) / n,
-            NS.load(Ordering::Relaxed) as f64 / n as f64 / 1e3
-        );
-        CALLS.store(0, Ordering::Relaxed);
-        NS.store(0, Ordering::Relaxed);
-        PAIRS.store(0, Ordering::Relaxed);
-        DISTINCT.store(0, Ordering::Relaxed);
-    }
-    static POP_CALLS: AtomicU64 = AtomicU64::new(0);
-    let pop_n = POP_CALLS.fetch_add(1, Ordering::Relaxed) + 1;
-    if pop_n == 4096 {
-        let mut hists = hists.lock().unwrap();
-        let mut aggregate: Vec<u64> = Vec::new();
-        let mut per_tensor_topk = Vec::new();
-        let mut non_moe = 0usize;
-        const CENSUS_TOPK: usize = 44;
-        for hist in hists.values() {
-            if hist.len() > 512 {
-                non_moe += 1;
-                continue;
-            }
-            let total: u64 = hist.iter().map(|&c| c as u64).sum();
-            if total == 0 {
-                continue;
-            }
-            let mut sorted = hist.clone();
-            sorted.sort_unstable_by(|a, b| b.cmp(a));
-            if aggregate.len() < sorted.len() {
-                aggregate.resize(sorted.len(), 0);
-            }
-            for (i, &c) in sorted.iter().enumerate() {
-                aggregate[i] += c as u64;
-            }
-            per_tensor_topk.push(
-                sorted
-                    .iter()
-                    .take(CENSUS_TOPK)
-                    .map(|&c| c as u64)
-                    .sum::<u64>() as f64
-                    / total as f64,
-            );
-        }
-        let agg_total: u64 = aggregate.iter().sum();
-        let coverage = |k: usize| aggregate.iter().take(k).sum::<u64>() as f64 / agg_total as f64;
-        per_tensor_topk.sort_by(|a, b| a.partial_cmp(b).unwrap());
-        if !per_tensor_topk.is_empty() {
-            eprintln!(
-                "MOE_POP tensors={} non_moe={} experts={} agg_top16={:.2} top32={:.2} top44={:.2} top64={:.2} per_tensor_top44 p10={:.2} p50={:.2} p90={:.2}",
-                per_tensor_topk.len(),
-                non_moe,
-                aggregate.len(),
-                coverage(16),
-                coverage(32),
-                coverage(44),
-                coverage(64),
-                per_tensor_topk[per_tensor_topk.len() / 10],
-                per_tensor_topk[per_tensor_topk.len() / 2],
-                per_tensor_topk[per_tensor_topk.len() * 9 / 10],
-            );
-        }
-        hists.clear();
-        POP_CALLS.store(0, Ordering::Relaxed);
     }
 }
 
