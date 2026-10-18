@@ -21,9 +21,13 @@ fn test_matmul(
     (b, m, n, k): (usize, usize, usize, usize),
     dtype: GgmlDType,
 ) -> Result<()> {
-    if (device.is_cuda() || device.is_metal())
-        && (dtype == GgmlDType::Q8_1 || dtype == GgmlDType::Q8K)
-    {
+    // Hip (AMD-role twin of the CUDA fused kernels) supports the same dtype
+    // set as CUDA: Q8_1 and Q8K quantized matmul are not implemented there.
+    #[cfg(feature = "rocm")]
+    let unimplemented_dtype_device = device.is_cuda() || device.is_metal() || device.is_hip();
+    #[cfg(not(feature = "rocm"))]
+    let unimplemented_dtype_device = device.is_cuda() || device.is_metal();
+    if unimplemented_dtype_device && (dtype == GgmlDType::Q8_1 || dtype == GgmlDType::Q8K) {
         return Ok(());
     }
 
@@ -144,10 +148,19 @@ fn quantized_matmul(device: &Device) -> Result<()> {
                 [341876.0, 994283.0, 1655709.0, 2301518.0]
             ]
         ),
-        // No Hip golden values and no Hip entries in the `test_device!` macro; this
-        // arm exists only for match exhaustiveness on the local Hip-enabled fork.
+        // Hip routers quantized matmul through the hipcc-built twin of the
+        // CUDA fused kernels: same algorithm, same accumulation order, so the
+        // golden values are identical to the Cuda arm above (measured on the
+        // AMD iGPU, 2026-10-18).
         #[cfg(feature = "rocm")]
-        Device::Hip(_) => todo!("no Hip golden values for quantized_matmul"),
+        Device::Hip(_) => assert_eq!(
+            to_vec2_round(&res, 0)?,
+            &[
+                [84866.0, 214045.0, 344676.0, 473707.0],
+                [213425.0, 604313.0, 1000431.0, 1387960.0],
+                [342030.0, 994630.0, 1656248.0, 2302250.0]
+            ]
+        ),
     }
     test_matmul(device, (1, 3, 4, 256), GgmlDType::Q4_0)?;
     Ok(())
@@ -212,10 +225,18 @@ fn quantized_matmul_neg(device: &Device) -> Result<()> {
                 [-196472.0, 63012.0, 324585.0, 587902.0]
             ]
         ),
-        // No Hip golden values and no Hip entries in the `test_device!` macro; this
-        // arm exists only for match exhaustiveness on the local Hip-enabled fork.
+        // Hip routers quantized matmul through the hipcc-built twin of the
+        // CUDA fused kernels: same golden values as the Cuda arm above
+        // (measured on the AMD iGPU, 2026-10-18).
         #[cfg(feature = "rocm")]
-        Device::Hip(_) => todo!("no Hip golden values for quantized_matmul_neg"),
+        Device::Hip(_) => assert_eq!(
+            to_vec2_round(&res, 0)?,
+            &[
+                [243740.0, -19762.0, -285476.0, -550498.0],
+                [23774.0, 21645.0, 19395.0, 18364.0],
+                [-196045.0, 63030.0, 324120.0, 587079.0]
+            ]
+        ),
     }
     let lhs2 = Tensor::stack(&[&lhs, &lhs], 0)?;
     let res2 = matmul.forward(&lhs2)?;
@@ -251,9 +272,14 @@ fn qmm_batch(dev: &Device) -> Result<()> {
     let mm4 = rhs.forward(&lhs4)?;
     assert_eq!(mm4.shape().dims(), [12, 6]);
     let diff4 = (mm4.i(..6)? - &mm3)?.abs()?.sum_all()?.to_vec0::<f32>()?;
-    if dev.is_cuda() {
-        // We use different fused kernels (MMVQ for batch<=8, MMQ for batch>8) on CUDA which accumulate differently than dequantize-then-matmul.
-        // This can lead to small numerical differences especially for low-bit quants.
+    // CUDA and Hip (AMD-role twin kernels) use different fused kernels (MMVQ
+    // for batch<=8, MMQ for batch>8) which accumulate differently than
+    // dequantize-then-matmul; low-bit quants can show a tiny nonzero drift.
+    #[cfg(feature = "rocm")]
+    let has_fused_kernel_drift = dev.is_cuda() || dev.is_hip();
+    #[cfg(not(feature = "rocm"))]
+    let has_fused_kernel_drift = dev.is_cuda();
+    if has_fused_kernel_drift {
         assert!(0. < diff4 && diff4 < 0.5)
     } else {
         assert_eq!(diff4, 0.0)
@@ -266,9 +292,15 @@ fn qmm_batch(dev: &Device) -> Result<()> {
     Ok(())
 }
 
-test_device!(quantized_matmul, qmm_cpu, qmm_cuda, qmm_metal);
-test_device!(quantized_matmul_neg, qmm_n_cpu, qmm_n_cuda, qmm_n_metal);
-test_device!(qmm_batch, qmm_b_cpu, qmm_b_cuda, qmm_b_metal);
+test_device!(quantized_matmul, qmm_cpu, qmm_cuda, qmm_metal, qmm_hip);
+test_device!(
+    quantized_matmul_neg,
+    qmm_n_cpu,
+    qmm_n_cuda,
+    qmm_n_metal,
+    qmm_n_hip
+);
+test_device!(qmm_batch, qmm_b_cpu, qmm_b_cuda, qmm_b_metal, qmm_b_hip);
 
 fn embedding_weight(device: &Device) -> Result<Tensor> {
     let values = (0..(8 * 256))
@@ -1043,61 +1075,71 @@ test_device!(
     quantize_q4_0,
     quantize_q4_0_cpu,
     quantize_q4_0_cuda,
-    quantize_q4_0_metal
+    quantize_q4_0_metal,
+    quantize_q4_0_hip
 );
 test_device!(
     quantize_q4_1,
     quantize_q4_1_cpu,
     quantize_q4_1_cuda,
-    quantize_q4_1_metal
+    quantize_q4_1_metal,
+    quantize_q4_1_hip
 );
 test_device!(
     quantize_q5_0,
     quantize_q5_0_cpu,
     quantize_q5_0_cuda,
-    quantize_q5_0_metal
+    quantize_q5_0_metal,
+    quantize_q5_0_hip
 );
 test_device!(
     quantize_q5_1,
     quantize_q5_1_cpu,
     quantize_q5_1_cuda,
-    quantize_q5_1_metal
+    quantize_q5_1_metal,
+    quantize_q5_1_hip
 );
 test_device!(
     quantize_q2k,
     quantize_q2k_cpu,
     quantize_q2k_cuda,
-    quantize_q2k_metal
+    quantize_q2k_metal,
+    quantize_q2k_hip
 );
 test_device!(
     quantize_q3k,
     quantize_q3k_cpu,
     quantize_q3k_cuda,
-    quantize_q3k_metal
+    quantize_q3k_metal,
+    quantize_q3k_hip
 );
 test_device!(
     quantize_q4k,
     quantize_q4k_cpu,
     quantize_q4k_cuda,
-    quantize_q4k_metal
+    quantize_q4k_metal,
+    quantize_q4k_hip
 );
 test_device!(
     quantize_q5k,
     quantize_q5k_cpu,
     quantize_q5k_cuda,
-    quantize_q5k_metal
+    quantize_q5k_metal,
+    quantize_q5k_hip
 );
 test_device!(
     quantize_q6k,
     quantize_q6k_cpu,
     quantize_q6k_cuda,
-    quantize_q6k_metal
+    quantize_q6k_metal,
+    quantize_q6k_hip
 );
 test_device!(
     quantize_q8k,
     quantize_q8k_cpu,
     quantize_q8k_cuda,
-    quantize_q8k_metal
+    quantize_q8k_metal,
+    quantize_q8k_hip
 );
 
 /// Very simple dot product implementation
@@ -1239,13 +1281,19 @@ fn get_random_tensors(
 macro_rules! quantized_matmul {
     // TODO: Switch to generating the two last arguments automatically once concat_idents is
     // stable. https://github.com/rust-lang/rust/issues/29599
-    ($fn_name: ident, $fn_name_cpu: ident, $fn_name_cuda: ident, $fn_name_metal: ident, $dtype: expr) => {
+    ($fn_name: ident, $fn_name_cpu: ident, $fn_name_cuda: ident, $fn_name_metal: ident, $fn_name_hip: ident, $dtype: expr) => {
         fn $fn_name(device: &Device) -> Result<()> {
             test_matmul(device, (1, 3, 4, 256), $dtype)?;
             Ok(())
         }
 
-        test_device!($fn_name, $fn_name_cpu, $fn_name_cuda, $fn_name_metal);
+        test_device!(
+            $fn_name,
+            $fn_name_cpu,
+            $fn_name_cuda,
+            $fn_name_metal,
+            $fn_name_hip
+        );
     };
 }
 
@@ -1254,6 +1302,7 @@ quantized_matmul!(
     quantized_matmul_q4_0_cpu,
     quantized_matmul_q4_0_cuda,
     quantized_matmul_q4_0_metal,
+    quantized_matmul_q4_0_hip,
     GgmlDType::Q4_0
 );
 quantized_matmul!(
@@ -1261,6 +1310,7 @@ quantized_matmul!(
     quantized_matmul_q4_1_cpu,
     quantized_matmul_q4_1_cuda,
     quantized_matmul_q4_1_metal,
+    quantized_matmul_q4_1_hip,
     GgmlDType::Q4_1
 );
 quantized_matmul!(
@@ -1268,6 +1318,7 @@ quantized_matmul!(
     quantized_matmul_q5_0_cpu,
     quantized_matmul_q5_0_cuda,
     quantized_matmul_q5_0_metal,
+    quantized_matmul_q5_0_hip,
     GgmlDType::Q5_0
 );
 quantized_matmul!(
@@ -1275,6 +1326,7 @@ quantized_matmul!(
     quantized_matmul_q5_1_cpu,
     quantized_matmul_q5_1_cuda,
     quantized_matmul_q5_1_metal,
+    quantized_matmul_q5_1_hip,
     GgmlDType::Q5_1
 );
 quantized_matmul!(
@@ -1282,6 +1334,7 @@ quantized_matmul!(
     quantized_matmul_q8_0_cpu,
     quantized_matmul_q8_0_cuda,
     quantized_matmul_q8_0_metal,
+    quantized_matmul_q8_0_hip,
     GgmlDType::Q8_0
 );
 
@@ -1345,6 +1398,7 @@ quantized_matmul!(
     quantized_matmul_q8_1_cpu,
     quantized_matmul_q8_1_cuda,
     quantized_matmul_q8_1_metal,
+    quantized_matmul_q8_1_hip,
     GgmlDType::Q8_1
 );
 quantized_matmul!(
@@ -1352,6 +1406,7 @@ quantized_matmul!(
     quantized_matmul_q2k_cpu,
     quantized_matmul_q2k_cuda,
     quantized_matmul_q2k_metal,
+    quantized_matmul_q2k_hip,
     GgmlDType::Q2K
 );
 quantized_matmul!(
@@ -1359,6 +1414,7 @@ quantized_matmul!(
     quantized_matmul_q3k_cpu,
     quantized_matmul_q3k_cuda,
     quantized_matmul_q3k_metal,
+    quantized_matmul_q3k_hip,
     GgmlDType::Q3K
 );
 quantized_matmul!(
@@ -1366,6 +1422,7 @@ quantized_matmul!(
     quantized_matmul_q4k_cpu,
     quantized_matmul_q4k_cuda,
     quantized_matmul_q4k_metal,
+    quantized_matmul_q4k_hip,
     GgmlDType::Q4K
 );
 quantized_matmul!(
@@ -1373,6 +1430,7 @@ quantized_matmul!(
     quantized_matmul_q5k_cpu,
     quantized_matmul_q5k_cuda,
     quantized_matmul_q5k_metal,
+    quantized_matmul_q5k_hip,
     GgmlDType::Q5K
 );
 quantized_matmul!(
@@ -1380,6 +1438,7 @@ quantized_matmul!(
     quantized_matmul_q6k_cpu,
     quantized_matmul_q6k_cuda,
     quantized_matmul_q6k_metal,
+    quantized_matmul_q6k_hip,
     GgmlDType::Q6K
 );
 // Not implemented on metal
@@ -1388,6 +1447,7 @@ quantized_matmul!(
     quantized_matmul_q8k_cpu,
     quantized_matmul_q8k_cuda,
     quantized_matmul_q8k_metal,
+    quantized_matmul_q8k_hip,
     GgmlDType::Q8K
 );
 
@@ -1575,7 +1635,8 @@ test_device!(
     from_data_dequant_matches_canonical_when_caller_passes_cow_owned,
     from_data_dequant_matches_canonical_when_caller_passes_cow_owned_cpu,
     from_data_dequant_matches_canonical_when_caller_passes_cow_owned_cuda,
-    from_data_dequant_matches_canonical_when_caller_passes_cow_owned_metal
+    from_data_dequant_matches_canonical_when_caller_passes_cow_owned_metal,
+    from_data_dequant_matches_canonical_when_caller_passes_cow_owned_hip
 );
 
 // Repacked aarch64 kernels must agree with the dequantized reference across the m tiers
