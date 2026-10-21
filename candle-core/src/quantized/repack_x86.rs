@@ -847,6 +847,17 @@ pub(crate) fn gemv_fused(
 // (prefill) bucket by expert and run one tiled matmul per expert's tile range.
 const INDEXED_BUCKET_MIN_PAIRS: usize = 32;
 
+// The indexed paths quantize the lhs to BlockQ8K, so k must be QK_K-divisible;
+// check before any lhs quantization.
+pub(crate) fn indexed_supported(
+    dtype: super::GgmlDType,
+    n_experts: usize,
+    n_out: usize,
+    k: usize,
+) -> bool {
+    select(dtype, n_experts * n_out, k) && n_out.is_multiple_of(TILE_N)
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn try_indexed_gemv(
     storage: &dyn QuantizedType,
@@ -860,6 +871,9 @@ pub(crate) fn try_indexed_gemv(
     topk: usize,
     dst: &mut [f32],
 ) -> crate::Result<bool> {
+    if !indexed_supported(storage.dtype(), n_experts, n_out, k) {
+        return Ok(false);
+    }
     let lhs_q = quantize_lhs(lhs, n_rows, k);
     try_indexed_gemv_q(
         storage, cache, n_experts, n_out, k, &lhs_q, n_rows, ids, topk, dst,
@@ -880,7 +894,7 @@ pub(crate) fn try_indexed_gemv_q(
     dst: &mut [f32],
 ) -> crate::Result<bool> {
     let dtype = storage.dtype();
-    if !select(dtype, n_experts * n_out, k) || !n_out.is_multiple_of(TILE_N) {
+    if !indexed_supported(dtype, n_experts, n_out, k) {
         return Ok(false);
     }
     let packed = cache.x86_get_or_init(|| pack(dtype, storage, n_experts * n_out, k));

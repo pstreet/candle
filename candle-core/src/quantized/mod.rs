@@ -1331,6 +1331,11 @@ impl QTensor {
         else {
             return Ok(None);
         };
+        if !repack_x86::indexed_supported(g_storage.dtype(), n_experts, n_out_g, k)
+            || !repack_x86::indexed_supported(u_storage.dtype(), n_experts, n_out_u, k)
+        {
+            return Ok(None);
+        }
         let ids_v: Vec<u32> = ids
             .to_dtype(crate::DType::U32)?
             .flatten_all()?
