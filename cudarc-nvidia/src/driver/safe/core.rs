@@ -40,6 +40,11 @@ pub struct CudaContext {
     pub(crate) is_primary: bool,
     pub(crate) num_streams: AtomicUsize,
     pub(crate) event_tracking: AtomicBool,
+    // Recycle pool for the per-slice sync events (candle allocates and
+    // frees a slice per tensor op, so create/destroy per alloc is ~2
+    // driver calls x millions per serving window). Only DISABLE_TIMING,
+    // never-captured events live here; see CudaEvent::record.
+    pub(crate) event_pool: Mutex<Vec<CudaEvent>>,
     pub(crate) error_state: AtomicU32,
     // Graph-capture arena (ported from cudarc-hip): while installed, stream
     // allocations carve from the slab instead of creating mempool nodes.
@@ -151,6 +156,7 @@ impl CudaContext {
             is_primary: true,
             num_streams: AtomicUsize::new(0),
             event_tracking: AtomicBool::new(true),
+            event_pool: Mutex::new(Vec::new()),
             error_state: AtomicU32::new(0),
             capture_arena: Mutex::new(None),
             capture_arena_offset: AtomicUsize::new(0),
@@ -228,6 +234,7 @@ impl CudaContext {
             is_primary: false,
             num_streams: AtomicUsize::new(0),
             event_tracking: AtomicBool::new(true),
+            event_pool: Mutex::new(Vec::new()),
             error_state: AtomicU32::new(0),
             capture_arena: Mutex::new(None),
             capture_arena_offset: AtomicUsize::new(0),
@@ -284,6 +291,7 @@ impl CudaContext {
             is_primary: false,
             num_streams: AtomicUsize::new(0),
             event_tracking: AtomicBool::new(true),
+            event_pool: Mutex::new(Vec::new()),
             error_state: AtomicU32::new(0),
             capture_arena: Mutex::new(None),
             capture_arena_offset: AtomicUsize::new(0),
@@ -326,6 +334,7 @@ impl CudaContext {
             is_primary: false,
             num_streams: AtomicUsize::new(0),
             event_tracking: AtomicBool::new(true),
+            event_pool: Mutex::new(Vec::new()),
             error_state: AtomicU32::new(0),
             capture_arena: Mutex::new(None),
             capture_arena_offset: AtomicUsize::new(0),
@@ -613,6 +622,12 @@ impl CudaContext {
 pub struct CudaEvent {
     pub(crate) cu_event: sys::CUevent,
     pub(crate) ctx: Arc<CudaContext>,
+    // Set by record(): lets slice drop skip the wait for never-recorded
+    // events, and routes capture-bound events away from the recycle pool
+    // (a graph capture holds the CUevent handle; re-recording a recycled
+    // event would move the graph's wait point).
+    pub(crate) recorded: AtomicBool,
+    pub(crate) captured: AtomicBool,
 }
 
 unsafe impl Send for CudaEvent {}
@@ -625,6 +640,10 @@ impl Drop for CudaEvent {
             .record_err(unsafe { result::event::destroy(self.cu_event) });
     }
 }
+
+/// Upper bound on recycled sync events per context; beyond this, drops
+/// destroy (the driver's own refcount handles any graph-held events).
+const EVENT_POOL_MAX: usize = 1024;
 
 impl CudaContext {
     /// Creates a new [CudaEvent] with no work recorded. If `flags` is None, the event is created with
@@ -639,7 +658,33 @@ impl CudaContext {
         Ok(CudaEvent {
             cu_event,
             ctx: self.clone(),
+            recorded: AtomicBool::new(false),
+            captured: AtomicBool::new(false),
         })
+    }
+
+    /// Per-slice sync event, preferring the recycle pool. Only valid for
+    /// the tracking use case (DISABLE_TIMING, no external ownership).
+    pub(crate) fn acquire_event(self: &Arc<Self>) -> Result<CudaEvent, DriverError> {
+        if let Some(event) = self.event_pool.lock().unwrap().pop() {
+            return Ok(event);
+        }
+        self.new_event(None)
+    }
+
+    /// Recycle a retired sync event. Capture-bound events and pool overflow
+    /// fall through to drop (destroy). A recycled event keeps its stale
+    /// `recorded` state: a later wait resolves against its last record
+    /// point, which on the owning stream precedes the re-allocation, so
+    /// the wait is a completed no-op (conservative for cross-stream users).
+    pub(crate) fn release_event(&self, event: CudaEvent) {
+        if event.captured.load(Ordering::Acquire) {
+            return;
+        }
+        let mut pool = self.event_pool.lock().unwrap();
+        if pool.len() < EVENT_POOL_MAX {
+            pool.push(event);
+        }
     }
 }
 
@@ -670,7 +715,14 @@ impl CudaEvent {
             return Err(DriverError(sys::cudaError_enum::CUDA_ERROR_INVALID_CONTEXT));
         }
         self.ctx.bind_to_thread()?;
-        unsafe { result::event::record(self.cu_event, stream.cu_stream) }
+        let result = unsafe { result::event::record(self.cu_event, stream.cu_stream) };
+        if result.is_ok() {
+            self.recorded.store(true, Ordering::Release);
+            if stream.is_capturing() {
+                self.captured.store(true, Ordering::Release);
+            }
+        }
+        result
     }
 
     /// Will only block CPU thraed if [sys::CUevent_flags::CU_EVENT_BLOCKING_SYNC] was used to create this event.
@@ -904,11 +956,20 @@ impl<T> Drop for CudaSlice<T> {
             return;
         }
         let ctx = &self.stream.ctx;
-        if let Some(read) = self.read.as_ref() {
-            ctx.record_err(self.stream.wait(read));
+        // Take the sync events so they can return to the recycle pool after
+        // the free is enqueued. Never-recorded events (same-stream serving
+        // never records them) skip the wait entirely.
+        let read = self.read.take();
+        let write = self.write.take();
+        if let Some(read) = read.as_ref() {
+            if read.recorded.load(Ordering::Acquire) {
+                ctx.record_err(self.stream.wait(read));
+            }
         }
-        if let Some(write) = self.write.as_ref() {
-            ctx.record_err(self.stream.wait(write));
+        if let Some(write) = write.as_ref() {
+            if write.recorded.load(Ordering::Acquire) {
+                ctx.record_err(self.stream.wait(write));
+            }
         }
         if ctx.has_async_alloc {
             ctx.record_err(unsafe {
@@ -917,6 +978,12 @@ impl<T> Drop for CudaSlice<T> {
         } else {
             ctx.record_err(self.stream.synchronize());
             ctx.record_err(unsafe { result::free_sync(self.cu_device_ptr) });
+        }
+        if let Some(event) = read {
+            ctx.release_event(event);
+        }
+        if let Some(event) = write {
+            ctx.release_event(event);
         }
     }
 }
@@ -1277,7 +1344,12 @@ pub trait DevicePtr<T>: DeviceSlice<T> {
 
 impl<T> DevicePtr<T> for CudaSlice<T> {
     fn device_ptr<'a>(&'a self, stream: &'a CudaStream) -> (sys::CUdeviceptr, SyncOnDrop<'a>) {
-        if self.stream.context().is_managing_stream_synchronization() {
+        // The write-wait only orders cross-stream uses; same-stream copies
+        // are stream-ordered. Capture keeps the tracked behavior.
+        if self.stream.context().is_managing_stream_synchronization()
+            && !stream.is_capturing()
+            && !std::ptr::eq(stream, self.stream.as_ref())
+        {
             if let Some(write) = self.write.as_ref() {
                 stream.ctx.record_err(stream.wait(write));
             }
@@ -1291,7 +1363,12 @@ impl<T> DevicePtr<T> for CudaSlice<T> {
 
 impl<T> DevicePtr<T> for CudaView<'_, T> {
     fn device_ptr<'a>(&'a self, stream: &'a CudaStream) -> (sys::CUdeviceptr, SyncOnDrop<'a>) {
-        if self.stream.context().is_managing_stream_synchronization() {
+        // The write-wait only orders cross-stream uses; same-stream copies
+        // are stream-ordered. Capture keeps the tracked behavior.
+        if self.stream.context().is_managing_stream_synchronization()
+            && !stream.is_capturing()
+            && !std::ptr::eq(stream, self.stream.as_ref())
+        {
             if let Some(write) = self.write.as_ref() {
                 stream.ctx.record_err(stream.wait(write));
             }
@@ -1304,7 +1381,12 @@ impl<'a, T> CudaView<'a, T> {
     /// Identical behavior to [DevicePtr::device_ptr()], but the lifetime on the returned
     /// [SyncOnDrop], matches the lifetime of the view.
     pub fn view_ptr(self, stream: &'a CudaStream) -> (sys::CUdeviceptr, SyncOnDrop<'a>) {
-        if self.stream.context().is_managing_stream_synchronization() {
+        // The write-wait only orders cross-stream uses; same-stream copies
+        // are stream-ordered. Capture keeps the tracked behavior.
+        if self.stream.context().is_managing_stream_synchronization()
+            && !stream.is_capturing()
+            && !std::ptr::eq(stream, self.stream.as_ref())
+        {
             if let Some(write) = self.write.as_ref() {
                 stream.ctx.record_err(stream.wait(write));
             }
@@ -1315,7 +1397,12 @@ impl<'a, T> CudaView<'a, T> {
 
 impl<T> DevicePtr<T> for CudaViewMut<'_, T> {
     fn device_ptr<'a>(&'a self, stream: &'a CudaStream) -> (sys::CUdeviceptr, SyncOnDrop<'a>) {
-        if self.stream.context().is_managing_stream_synchronization() {
+        // The write-wait only orders cross-stream uses; same-stream copies
+        // are stream-ordered. Capture keeps the tracked behavior.
+        if self.stream.context().is_managing_stream_synchronization()
+            && !stream.is_capturing()
+            && !std::ptr::eq(stream, self.stream.as_ref())
+        {
             if let Some(write) = self.write.as_ref() {
                 stream.ctx.record_err(stream.wait(write));
             }
@@ -1328,7 +1415,12 @@ impl<'a, T> CudaViewMut<'a, T> {
     /// Identical behavior to [DevicePtr::device_ptr()], but the lifetime on the returned
     /// [SyncOnDrop], matches the lifetime of the view.
     pub fn view_ptr(self, stream: &'a CudaStream) -> (sys::CUdeviceptr, SyncOnDrop<'a>) {
-        if self.stream.context().is_managing_stream_synchronization() {
+        // The write-wait only orders cross-stream uses; same-stream copies
+        // are stream-ordered. Capture keeps the tracked behavior.
+        if self.stream.context().is_managing_stream_synchronization()
+            && !stream.is_capturing()
+            && !std::ptr::eq(stream, self.stream.as_ref())
+        {
             if let Some(write) = self.write.as_ref() {
                 stream.ctx.record_err(stream.wait(write));
             }
@@ -1364,7 +1456,12 @@ impl<T> DevicePtrMut<T> for CudaSlice<T> {
         &'a mut self,
         stream: &'a CudaStream,
     ) -> (sys::CUdeviceptr, SyncOnDrop<'a>) {
-        if self.stream.context().is_managing_stream_synchronization() {
+        // These waits only order cross-stream uses; same-stream writes are
+        // stream-ordered. Capture keeps the tracked behavior.
+        if self.stream.context().is_managing_stream_synchronization()
+            && !stream.is_capturing()
+            && !std::ptr::eq(stream, self.stream.as_ref())
+        {
             if let Some(read) = self.read.as_ref() {
                 stream.ctx.record_err(stream.wait(read));
             }
@@ -1384,7 +1481,12 @@ impl<T> DevicePtrMut<T> for CudaViewMut<'_, T> {
         &'a mut self,
         stream: &'a CudaStream,
     ) -> (sys::CUdeviceptr, SyncOnDrop<'a>) {
-        if self.stream.context().is_managing_stream_synchronization() {
+        // These waits only order cross-stream uses; same-stream writes are
+        // stream-ordered. Capture keeps the tracked behavior.
+        if self.stream.context().is_managing_stream_synchronization()
+            && !stream.is_capturing()
+            && !std::ptr::eq(stream, self.stream.as_ref())
+        {
             if let Some(read) = self.read.as_ref() {
                 stream.ctx.record_err(stream.wait(read));
             }
@@ -1400,7 +1502,12 @@ impl<'a, T> CudaViewMut<'a, T> {
     /// Identical behavior to [DevicePtrMut::device_ptr_mut()], but the lifetime on the returned
     /// [SyncOnDrop], matches the lifetime of the view.
     pub fn view_ptr_mut(self, stream: &'a CudaStream) -> (sys::CUdeviceptr, SyncOnDrop<'a>) {
-        if self.stream.context().is_managing_stream_synchronization() {
+        // These waits only order cross-stream uses; same-stream writes are
+        // stream-ordered. Capture keeps the tracked behavior.
+        if self.stream.context().is_managing_stream_synchronization()
+            && !stream.is_capturing()
+            && !std::ptr::eq(stream, self.stream.as_ref())
+        {
             if let Some(read) = self.read.as_ref() {
                 stream.ctx.record_err(stream.wait(read));
             }
@@ -1725,8 +1832,8 @@ impl CudaStream {
         };
         let (read, write) = if self.ctx.is_event_tracking() {
             (
-                Some(self.ctx.new_event(None)?),
-                Some(self.ctx.new_event(None)?),
+                Some(self.ctx.acquire_event()?),
+                Some(self.ctx.acquire_event()?),
             )
         } else {
             (None, None)

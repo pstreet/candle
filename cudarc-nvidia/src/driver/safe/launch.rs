@@ -100,7 +100,10 @@ unsafe impl<'a, 'b: 'a, T: DeviceRepr> PushKernelArg<&'b T> for LaunchArgs<'a> {
 unsafe impl<'a, 'b: 'a, T> PushKernelArg<&'b CudaSlice<T>> for LaunchArgs<'a> {
     #[inline(always)]
     fn arg(&mut self, arg: &'b CudaSlice<T>) -> &mut Self {
-        if self.stream.context().is_managing_stream_synchronization() {
+        if self.stream.context().is_managing_stream_synchronization()
+            && !self.stream.is_capturing()
+            && !std::ptr::eq(self.stream, arg.stream.as_ref())
+        {
             if let Some(write) = arg.write.as_ref() {
                 self.waits.push(write);
             }
@@ -117,7 +120,10 @@ unsafe impl<'a, 'b: 'a, T> PushKernelArg<&'b CudaSlice<T>> for LaunchArgs<'a> {
 unsafe impl<'a, 'b: 'a, T> PushKernelArg<&'b mut CudaSlice<T>> for LaunchArgs<'a> {
     #[inline(always)]
     fn arg(&mut self, arg: &'b mut CudaSlice<T>) -> &mut Self {
-        if self.stream.context().is_managing_stream_synchronization() {
+        if self.stream.context().is_managing_stream_synchronization()
+            && !self.stream.is_capturing()
+            && !std::ptr::eq(self.stream, arg.stream.as_ref())
+        {
             if let Some(read) = arg.read.as_ref() {
                 self.waits.push(read);
             }
@@ -135,7 +141,10 @@ unsafe impl<'a, 'b: 'a, T> PushKernelArg<&'b mut CudaSlice<T>> for LaunchArgs<'a
 unsafe impl<'a, 'b: 'a, 'c: 'b, T> PushKernelArg<&'b CudaView<'c, T>> for LaunchArgs<'a> {
     #[inline(always)]
     fn arg(&mut self, arg: &'b CudaView<'c, T>) -> &mut Self {
-        if self.stream.context().is_managing_stream_synchronization() {
+        if self.stream.context().is_managing_stream_synchronization()
+            && !self.stream.is_capturing()
+            && !std::ptr::eq(self.stream, arg.stream.as_ref())
+        {
             if let Some(write) = arg.write.as_ref() {
                 self.waits.push(write);
             }
@@ -151,7 +160,10 @@ unsafe impl<'a, 'b: 'a, 'c: 'b, T> PushKernelArg<&'b CudaView<'c, T>> for Launch
 unsafe impl<'a, 'b: 'a, 'c: 'b, T> PushKernelArg<&'b mut CudaViewMut<'c, T>> for LaunchArgs<'a> {
     #[inline(always)]
     fn arg(&mut self, arg: &'b mut CudaViewMut<'c, T>) -> &mut Self {
-        if self.stream.context().is_managing_stream_synchronization() {
+        if self.stream.context().is_managing_stream_synchronization()
+            && !self.stream.is_capturing()
+            && !std::ptr::eq(self.stream, arg.stream.as_ref())
+        {
             if let Some(read) = arg.read.as_ref() {
                 self.waits.push(read);
             }

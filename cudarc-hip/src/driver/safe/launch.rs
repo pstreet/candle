@@ -125,7 +125,7 @@ unsafe impl<'a, 'b: 'a, T: DeviceRepr> PushKernelArg<&'b T> for LaunchArgs<'a> {
 unsafe impl<'a, 'b: 'a, T> PushKernelArg<&'b CudaSlice<T>> for LaunchArgs<'a> {
     #[inline(always)]
     fn arg(&mut self, arg: &'b CudaSlice<T>) -> &mut Self {
-        add_events(self, &arg.read, &arg.write, true);
+        add_events(self, arg.stream.as_ref(), &arg.read, &arg.write, true);
         self.args
             .push((&arg.cu_device_ptr) as *const sys::CUdeviceptr as *mut c_void);
         self
@@ -135,7 +135,7 @@ unsafe impl<'a, 'b: 'a, T> PushKernelArg<&'b CudaSlice<T>> for LaunchArgs<'a> {
 unsafe impl<'a, 'b: 'a, T> PushKernelArg<&'b mut CudaSlice<T>> for LaunchArgs<'a> {
     #[inline(always)]
     fn arg(&mut self, arg: &'b mut CudaSlice<T>) -> &mut Self {
-        add_events(self, &arg.read, &arg.write, false);
+        add_events(self, arg.stream.as_ref(), &arg.read, &arg.write, false);
         self.args
             .push((&arg.cu_device_ptr) as *const sys::CUdeviceptr as *mut c_void);
         self
@@ -145,7 +145,7 @@ unsafe impl<'a, 'b: 'a, T> PushKernelArg<&'b mut CudaSlice<T>> for LaunchArgs<'a
 unsafe impl<'a, 'b: 'a, 'c: 'b, T> PushKernelArg<&'b CudaView<'c, T>> for LaunchArgs<'a> {
     #[inline(always)]
     fn arg(&mut self, arg: &'b CudaView<'c, T>) -> &mut Self {
-        add_events(self, &arg.read, &arg.write, true);
+        add_events(self, arg.stream.as_ref(), &arg.read, &arg.write, true);
         self.args
             .push((&arg.ptr) as *const sys::CUdeviceptr as *mut c_void);
         self
@@ -155,7 +155,7 @@ unsafe impl<'a, 'b: 'a, 'c: 'b, T> PushKernelArg<&'b CudaView<'c, T>> for Launch
 unsafe impl<'a, 'b: 'a, 'c: 'b, T> PushKernelArg<&'b mut CudaViewMut<'c, T>> for LaunchArgs<'a> {
     #[inline(always)]
     fn arg(&mut self, arg: &'b mut CudaViewMut<'c, T>) -> &mut Self {
-        add_events(self, &arg.read, &arg.write, false);
+        add_events(self, arg.stream.as_ref(), &arg.read, &arg.write, false);
         self.args
             .push((&arg.ptr) as *const sys::CUdeviceptr as *mut c_void);
         self
@@ -165,11 +165,18 @@ unsafe impl<'a, 'b: 'a, 'c: 'b, T> PushKernelArg<&'b mut CudaViewMut<'c, T>> for
 #[inline(always)]
 fn add_events<'a>(
     args: &mut LaunchArgs<'a>,
+    home: &CudaStream,
     read: &'a Option<Arc<CudaEvent>>,
     write: &'a Option<Arc<CudaEvent>>,
     immutable: bool,
 ) {
-    if args.stream.inner.ctx.is_managing_stream_synchronization() {
+    // Same-stream uses are ordered by the stream itself; the event
+    // waits/records only exist for cross-stream safety. Capture keeps
+    // the tracked behavior so captured graph structure is unchanged.
+    if args.stream.inner.ctx.is_managing_stream_synchronization()
+        && !args.stream.is_capturing()
+        && !std::ptr::eq(args.stream, home)
+    {
         if let Some(write) = write {
             args.waits.push(&**write);
         }
