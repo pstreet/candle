@@ -8,9 +8,9 @@ the backend:
   capture/graphs).
 - `candle-kernels`: custom kernels (MoE, MMVQ,
   MMQ, GDN helpers) compiled as HIP FFI entry points. CUDA sources are
-  reused through a `rocm_compat` shim (`MISTRALRS_ROCM_COMPAT_INCLUDE`
-  overrides its location); the `CANDLE_ROCM_CUDA_ARCH` values in the
-  per-kernel table select the device codepath, not your GPU.
+  reused through a `rocm_compat` shim (its location is fixed by the
+  build); the per-kernel `CANDLE_ROCM_CUDA_ARCH` values select the
+  device codepath, not your GPU.
 - `candle-core` `rocm` backend: GEMM dispatch (hipBLASLt with rocBLAS
   fallback), managed-weight uploads, graph capture arenas.
 
@@ -28,8 +28,7 @@ cargo run --example quantized-qwen3-moe --release --features rocm -- \
 `CANDLE_ROCM_ARCH` is baked in at compile time: rebuilding is required
 when moving to a different GPU. The full knob list (GEMM thresholds,
 MMQ selection, managed weights, graph capture) is in the main
-knobs, graph capture) is in the main repo README (ROCm sections) and its
-troubleshooting entries.
+repo README (ROCm sections) and its troubleshooting entries.
 
 ## Writing and porting kernels
 
