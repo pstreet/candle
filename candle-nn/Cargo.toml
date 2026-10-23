@@ -37,7 +37,7 @@ cuda = ["candle/cuda"]
 rocm = ["candle/rocm"]
 # Multi-vendor is just both features together (`--features cuda,rocm`); each
 # forwards its own half, so combinations need no forwarding feature.
-    cudnn = ["candle/cudnn"]
+cudnn = ["candle/cudnn"]
 mkl = ["dep:intel-mkl-src", "candle/mkl"]
 metal = ["candle/metal", "dep:candle-metal-kernels", "dep:objc2-metal"]
 metal-debug-labels = ["metal", "candle/metal-debug-labels"]
