@@ -1241,10 +1241,14 @@ impl QTensor {
         let QStorage::Cpu(storage) = &self.storage else {
             return Ok(None);
         };
-        let ids_v: Vec<u32> = ids
-            .to_dtype(crate::DType::U32)?
-            .flatten_all()?
-            .to_vec1::<u32>()?;
+        // Skip the dtype conversion when ids is already U32 (common path).
+        let ids_v: Vec<u32> = if ids.dtype() == crate::DType::U32 {
+            ids.flatten_all()?.to_vec1::<u32>()?
+        } else {
+            ids.to_dtype(crate::DType::U32)?
+                .flatten_all()?
+                .to_vec1::<u32>()?
+        };
         if ids_v.iter().any(|&e| e as usize >= n_experts) {
             crate::bail!("expert index out of range");
         }
@@ -1336,10 +1340,14 @@ impl QTensor {
         {
             return Ok(None);
         }
-        let ids_v: Vec<u32> = ids
-            .to_dtype(crate::DType::U32)?
-            .flatten_all()?
-            .to_vec1::<u32>()?;
+        // Skip the dtype conversion when ids is already U32 (common path).
+        let ids_v: Vec<u32> = if ids.dtype() == crate::DType::U32 {
+            ids.flatten_all()?.to_vec1::<u32>()?
+        } else {
+            ids.to_dtype(crate::DType::U32)?
+                .flatten_all()?
+                .to_vec1::<u32>()?
+        };
         if ids_v.iter().any(|&e| e as usize >= n_experts) {
             crate::bail!("expert index out of range");
         }
