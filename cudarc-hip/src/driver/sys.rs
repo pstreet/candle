@@ -800,6 +800,7 @@ pub unsafe fn cuDeviceGetMemPool(pool: *mut CUmemoryPool, device: c_int) -> CUre
     cuDeviceGetMemPool(pool, device)
 }
 
+// Downstream-facing FFI: used by mistral.rs; do not remove during cleanup.
 #[cfg(feature = "dynamic-loading")]
 pub unsafe fn cuMemPoolTrimTo(pool: CUmemoryPool, min_bytes_to_keep: usize) -> CUresult {
     let cuMemPoolTrimTo: extern "C" fn(CUmemoryPool, usize) -> CUresult = load("hipMemPoolTrimTo");
