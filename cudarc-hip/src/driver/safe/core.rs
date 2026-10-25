@@ -403,6 +403,7 @@ impl CudaContext {
     }
 
     /// Allocates page-locked host memory with write-combined flags.
+    /// Downstream-facing FFI: mistral.rs graph staging uses this; do not remove.
     ///
     /// # Safety
     /// The returned memory is uninitialized.
@@ -557,6 +558,7 @@ impl CudaEvent {
     }
 
     /// Elapsed time in milliseconds between this event and `end`.
+    /// Downstream-facing: mistral.rs benches/probes use this; do not remove.
     pub fn elapsed_ms(&self, end: &Self) -> Result<f32, DriverError> {
         if !Arc::ptr_eq(&self.ctx, &end.ctx) {
             return Err(DriverError(sys::CUresult::CUDA_ERROR_INVALID_VALUE));

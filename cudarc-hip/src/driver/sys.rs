@@ -54,6 +54,7 @@ pub enum CUresult {
     CUDA_ERROR_DEINITIALIZED = 4,
     CUDA_ERROR_NO_DEVICE = 100,
     CUDA_ERROR_UNKNOWN = 999,
+    // Downstream-facing: mistral.rs matches on this variant; do not remove.
     CUDA_ERROR_NOT_SUPPORTED = 801,
 }
 
@@ -862,6 +863,7 @@ pub unsafe fn cuEventElapsedTime(ms: *mut f32, start: CUevent, stop: CUevent) ->
 }
 
 // `cuMemcpyHtoDAsync_v2` has no 1:1 HIP symbol (the copy kind is implicit), so wrap it.
+// Downstream-facing FFI: used by mistral.rs; do not remove during cleanup.
 #[inline]
 pub unsafe fn cuMemcpyHtoDAsync_v2(
     dst: CUdeviceptr,
@@ -880,6 +882,7 @@ pub unsafe fn cuMemcpyHtoDAsync_v2(
 }
 
 // Same for `cuMemcpyDtoHAsync_v2`.
+// Downstream-facing FFI: used by mistral.rs; do not remove during cleanup.
 #[inline]
 pub unsafe fn cuMemcpyDtoHAsync_v2(
     dst: *mut c_void,
