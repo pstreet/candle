@@ -99,6 +99,33 @@ gpu_fork_lt_stub! {
 
 const CUDA_GRAPH_HTOD_CACHE_MAX_BYTES: usize = 4096;
 
+// MRS_TRACE_BIG_HTOD=1: eprintln every over-cap host upload with a backtrace,
+// so uploads that would break graph capture can be identified from eager runs.
+fn big_htod_trace_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var("MRS_TRACE_BIG_HTOD").as_deref() == Ok("1"))
+}
+
+fn big_htod_trace(byte_len: usize) {
+    if big_htod_trace_enabled() {
+        eprintln!(
+            "[htod] over-cap upload {byte_len}B > {CUDA_GRAPH_HTOD_CACHE_MAX_BYTES}B cache cap, never cacheable, would break graph capture; backtrace:\n{}",
+            std::backtrace::Backtrace::force_capture()
+        );
+    }
+}
+
+fn big_htod_backtrace_note() -> String {
+    big_htod_trace_enabled()
+        .then(|| {
+            format!(
+                "; backtrace:\n{}",
+                std::backtrace::Backtrace::force_capture()
+            )
+        })
+        .unwrap_or_default()
+}
+
 type CudaGraphHtodCacheKey = (DeviceId, TypeId, Vec<u8>);
 type CudaGraphHtodCache = HashMap<CudaGraphHtodCacheKey, Box<dyn Any>>;
 
@@ -429,8 +456,12 @@ impl CudaDevice {
         let byte_len = std::mem::size_of_val(src_slice);
         if byte_len > CUDA_GRAPH_HTOD_CACHE_MAX_BYTES {
             if self.cuda_graph_capture_active() {
-                crate::bail!("CUDA graph capture cannot upload uncached host data");
+                crate::bail!(
+                    "CUDA graph capture cannot upload uncached host data ({byte_len}B exceeds the {CUDA_GRAPH_HTOD_CACHE_MAX_BYTES}B cache cap){}",
+                    big_htod_backtrace_note()
+                );
             }
+            big_htod_trace(byte_len);
             return Ok(None);
         }
 
@@ -454,7 +485,10 @@ impl CudaDevice {
             return Ok(Some(cached));
         }
         if self.cuda_graph_capture_active() {
-            crate::bail!("CUDA graph capture missing cached host data");
+            crate::bail!(
+                "CUDA graph capture missing cached host data ({byte_len}B){}",
+                big_htod_backtrace_note()
+            );
         }
 
         let cached = self.stream.clone_htod(src).w()?;
