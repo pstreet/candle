@@ -1044,12 +1044,22 @@ impl Map2 for Conv1D<'_> {
             }
         }
 
+        let k_cache: Vec<Vec<T>> = (0..p.c_out)
+            .map(|dst_c_idx| {
+                (0..p.k_size)
+                    .flat_map(|offset| {
+                        (0..p.c_in).map(move |c_in_idx| {
+                            k[dst_c_idx * k_s0 + c_in_idx * k_s1 + offset * k_s2]
+                        })
+                    })
+                    .collect()
+            })
+            .collect();
+
         for offset in 0..p.k_size {
             (0..p.c_out).into_par_iter().for_each(|dst_c_idx| {
                 let dst_idx = dst_c_idx * l_out;
-                let k_cont = (0..p.c_in)
-                    .map(|c_in_idx| k[dst_c_idx * k_s0 + c_in_idx * k_s1 + offset * k_s2])
-                    .collect::<Vec<_>>();
+                let k_cont = &k_cache[dst_c_idx][offset * p.c_in..(offset + 1) * p.c_in];
                 for b_idx in 0..p.b_size {
                     let dst_idx = dst_idx + b_idx * p.c_out * l_out;
                     for dst_l in 0..l_out {
@@ -1275,11 +1285,21 @@ impl Map2 for ConvTranspose1D<'_> {
             }
         }
 
+        let k_cache: Vec<Vec<T>> = (0..p.c_out)
+            .map(|dst_c_idx| {
+                (0..p.k_size)
+                    .flat_map(|k_idx| {
+                        (0..p.c_in).map(move |c_in_idx| {
+                            k[c_in_idx * k_s0 + dst_c_idx * k_s1 + k_idx * k_s2]
+                        })
+                    })
+                    .collect()
+            })
+            .collect();
+
         for k_idx in 0..p.k_size {
             (0..p.c_out).into_par_iter().for_each(|dst_c_idx| {
-                let k_cont = (0..p.c_in)
-                    .map(|c_in_idx| k[c_in_idx * k_s0 + dst_c_idx * k_s1 + k_idx * k_s2])
-                    .collect::<Vec<_>>();
+                let k_cont = &k_cache[dst_c_idx][k_idx * p.c_in..(k_idx + 1) * p.c_in];
                 for b_idx in 0..p.b_size {
                     for l_idx in 0..p.l_in {
                         let out_idx = l_idx * p.stride + k_idx * p.dilation;
@@ -1348,14 +1368,28 @@ impl Map2 for ConvTranspose2D<'_> {
             }
         }
 
+        let k_cache: Vec<Vec<T>> = (0..p.c_out)
+            .map(|dst_c_idx| {
+                (0..p.k_h * p.k_w)
+                    .flat_map(|kw_kh| {
+                        let offset_h = kw_kh / p.k_w;
+                        let offset_w = kw_kh % p.k_w;
+                        (0..p.c_in).map(move |c_in_idx| {
+                            k[c_in_idx * k_s0
+                                + dst_c_idx * k_s1
+                                + offset_h * k_s2
+                                + offset_w * k_s3]
+                        })
+                    })
+                    .collect()
+            })
+            .collect();
+
         for k_y in 0..p.k_h {
             for k_x in 0..p.k_w {
                 (0..p.c_out).into_par_iter().for_each(|dst_c_idx| {
-                    let k_cont = (0..p.c_in)
-                        .map(|c_in_idx| {
-                            k[c_in_idx * k_s0 + dst_c_idx * k_s1 + k_y * k_s2 + k_x * k_s3]
-                        })
-                        .collect::<Vec<_>>();
+                    let k_cont = &k_cache[dst_c_idx]
+                        [(k_y * p.k_w + k_x) * p.c_in..(k_y * p.k_w + k_x + 1) * p.c_in];
                     for b_idx in 0..p.b_size {
                         for inp_y in 0..p.i_h {
                             for inp_x in 0..p.i_w {
