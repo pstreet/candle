@@ -148,7 +148,12 @@ impl Drop for CudaGraphHtodCacheGuard {
 }
 
 pub struct ModuleStore {
-    mdls: [Option<Arc<cudarc::driver::CudaModule>>; kernels::ALL_IDS.len()],
+    mdls: [Option<Arc<ModuleCache>>; kernels::ALL_IDS.len()],
+}
+
+pub struct ModuleCache {
+    pub module: Arc<cudarc::driver::CudaModule>,
+    pub funcs: std::sync::RwLock<HashMap<String, CudaFunction>>,
 }
 
 #[derive(Clone)]
@@ -611,19 +616,43 @@ impl CudaDevice {
 
     pub fn get_or_load_func(&self, fn_name: &str, mdl: &kernels::Module) -> Result<CudaFunc> {
         let ms = self.modules.read().unwrap();
-        if let Some(mdl) = ms.mdls[mdl.index()].as_ref() {
-            let func = mdl.load_function(fn_name).w()?;
-            return Ok(CudaFunc {
-                func,
-                stream: self.stream.clone(),
-            });
+        if let Some(cache) = ms.mdls[mdl.index()].as_ref() {
+            if let Some(func) = cache.funcs.read().unwrap().get(fn_name).cloned() {
+                return Ok(CudaFunc {
+                    func,
+                    stream: self.stream.clone(),
+                });
+            }
         }
         drop(ms);
         let mut ms = self.modules.write().unwrap();
-        let ptx: cudarc::nvrtc::Ptx = gpu_ptx_load!(mdl);
-        let cuda_module = self.context.load_module(ptx).w()?;
-        ms.mdls[mdl.index()] = Some(cuda_module.clone());
-        let func = cuda_module.load_function(fn_name).w()?;
+        let cache = match ms.mdls[mdl.index()].as_ref() {
+            Some(cache) => cache.clone(),
+            None => {
+                let ptx: cudarc::nvrtc::Ptx = gpu_ptx_load!(mdl);
+                let cuda_module = self.context.load_module(ptx).w()?;
+                let cache = Arc::new(ModuleCache {
+                    module: cuda_module,
+                    funcs: std::sync::RwLock::new(HashMap::new()),
+                });
+                ms.mdls[mdl.index()] = Some(cache.clone());
+                cache
+            }
+        };
+        // Check again under read lock in case another thread loaded it
+        let func = {
+            if let Some(func) = cache.funcs.read().unwrap().get(fn_name).cloned() {
+                func
+            } else {
+                let func = cache.module.load_function(fn_name).w()?;
+                cache
+                    .funcs
+                    .write()
+                    .unwrap()
+                    .insert(fn_name.to_string(), func.clone());
+                func
+            }
+        };
         Ok(CudaFunc {
             func,
             stream: self.stream.clone(),
