@@ -1415,6 +1415,21 @@ impl<T: DeviceRepr> CudaSlice<T> {
     pub fn try_clone(&self) -> Result<Self, DriverError> {
         self.stream.clone_dtod(self)
     }
+
+    /// Non-owning view sharing the same allocation as `self`.
+    /// `drop()` is a no-op (graph_owned=true); the Arc keeps memory alive.
+    pub fn share(&self) -> Self {
+        CudaSlice {
+            cu_device_ptr: self.cu_device_ptr,
+            len: self.len,
+            read: None,
+            write: None,
+            stream: Arc::clone(&self.stream),
+            graph_owned: true,
+            managed: self.managed,
+            marker: PhantomData,
+        }
+    }
 }
 
 impl<T: DeviceRepr> Clone for CudaSlice<T> {

@@ -475,16 +475,10 @@ impl CudaDevice {
                 .to_vec();
         let key = (self.id, TypeId::of::<T>(), bytes);
         if let Some(cached) = CUDA_GRAPH_HTOD_CACHE.with(|cache| {
-            cache.borrow().get(&key).and_then(|cached| {
-                cached
-                    .downcast_ref::<cudarc::driver::CudaSlice<T>>()
-                    .and_then(
-                        // try_clone, not Clone: the stream may be poisoned by an
-                        // earlier in-capture failure, and Clone unwraps (aborted
-                        // the process, 2026-10-07). A failed clone falls through
-                        // to the capturing check below and surfaces as an error.
-                        |slice| slice.try_clone().ok(),
-                    )
+            cache.borrow().get(&key).and_then(|boxed| {
+                boxed
+                    .downcast_ref::<Arc<cudarc::driver::CudaSlice<T>>>()
+                    .map(|arc| (*arc).share())
             })
         }) {
             return Ok(Some(cached));
@@ -497,10 +491,11 @@ impl CudaDevice {
         }
 
         let cached = self.stream.clone_htod(src).w()?;
+        let arc = Arc::new(cached);
         CUDA_GRAPH_HTOD_CACHE.with(|cache| {
-            cache.borrow_mut().insert(key, Box::new(cached.clone()));
+            cache.borrow_mut().insert(key, Box::new(arc.clone()));
         });
-        Ok(Some(cached))
+        Ok(Some((*arc).share()))
     }
 
     fn cuda_graph_capture_active(&self) -> bool {
