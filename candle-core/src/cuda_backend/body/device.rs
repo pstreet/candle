@@ -147,10 +147,6 @@ impl Drop for CudaGraphHtodCacheGuard {
     }
 }
 
-pub struct ModuleStore {
-    mdls: [Option<Arc<ModuleCache>>; kernels::ALL_IDS.len()],
-}
-
 pub struct ModuleCache {
     pub module: Arc<cudarc::driver::CudaModule>,
     pub funcs: std::sync::RwLock<HashMap<String, CudaFunction>>,
@@ -160,7 +156,16 @@ pub struct ModuleCache {
 pub struct CudaDevice {
     id: DeviceId,
     context: Arc<cudarc::driver::CudaContext>,
-    modules: Arc<std::sync::RwLock<ModuleStore>>,
+    /// Per-module OnceLocks — lock-free read for cache hits, OnceLock
+    /// ensures single module load. Replaces the global RwLock<ModuleStore>
+    /// to avoid per-op lock contention on the module store.
+    modules: Arc<
+        std::sync::OnceLock<
+            std::sync::RwLock<
+                std::collections::HashMap<usize, std::sync::OnceLock<Arc<ModuleCache>>>,
+            >,
+        >,
+    >,
     custom_modules: Arc<std::sync::RwLock<HashMap<String, Arc<cudarc::driver::CudaModule>>>>,
     stream: Arc<cudarc::driver::CudaStream>,
     pub(crate) blas: Arc<cudarc::cublas::CudaBlas>,
@@ -610,31 +615,37 @@ impl CudaDevice {
     }
 
     pub fn get_or_load_func(&self, fn_name: &str, mdl: &kernels::Module) -> Result<CudaFunc> {
-        let ms = self.modules.read().unwrap();
-        if let Some(cache) = ms.mdls[mdl.index()].as_ref() {
-            if let Some(func) = cache.funcs.read().unwrap().get(fn_name).cloned() {
-                return Ok(CudaFunc {
-                    func,
-                    stream: self.stream.clone(),
-                });
+        // Ensure the map is initialized (OnceLock ensures this runs once).
+        let map = self
+            .modules
+            .get_or_init(|| std::sync::RwLock::new(std::collections::HashMap::new()));
+
+        let idx = mdl.index();
+        // Lock-free read for cache hits; OnceLock guarantees single init.
+        if let Some(slot) = map.read().unwrap().get(&idx) {
+            if let Some(cache) = slot.get() {
+                if let Some(func) = cache.funcs.read().unwrap().get(fn_name).cloned() {
+                    return Ok(CudaFunc {
+                        func,
+                        stream: self.stream.clone(),
+                    });
+                }
             }
         }
-        drop(ms);
-        let mut ms = self.modules.write().unwrap();
-        let cache = match ms.mdls[mdl.index()].as_ref() {
-            Some(cache) => cache.clone(),
-            None => {
-                let ptx: cudarc::nvrtc::Ptx = gpu_ptx_load!(mdl);
-                let cuda_module = self.context.load_module(ptx).w()?;
-                let cache = Arc::new(ModuleCache {
-                    module: cuda_module,
-                    funcs: std::sync::RwLock::new(HashMap::new()),
-                });
-                ms.mdls[mdl.index()] = Some(cache.clone());
-                cache
-            }
-        };
-        // Check again under read lock in case another thread loaded it
+
+        // Miss: need to (re)initialize the OnceLock and potentially load.
+        let mut map = map.write().unwrap();
+        let entry = map.entry(idx).or_insert_with(std::sync::OnceLock::new);
+        let cache = entry.get_or_init(|| {
+            let ptx: cudarc::nvrtc::Ptx = gpu_ptx_load!(mdl);
+            let cuda_module = self.context.load_module(ptx).w().unwrap();
+            Arc::new(ModuleCache {
+                module: cuda_module,
+                funcs: std::sync::RwLock::new(HashMap::new()),
+            })
+        });
+
+        // Check func cache again (another thread may have loaded it).
         let func = {
             if let Some(func) = cache.funcs.read().unwrap().get(fn_name).cloned() {
                 func
@@ -673,9 +684,6 @@ impl CudaDevice {
         let blas = cudarc::cublas::CudaBlas::new(stream.clone()).w()?;
         let blas_lt = make_blas_lt(&stream)?;
         let curand = cudarc::curand::CudaRng::new(299792458, stream.clone()).w()?;
-        let module_store = ModuleStore {
-            mdls: [const { None }; kernels::ALL_IDS.len()],
-        };
         Ok(Self {
             id: DeviceId::new(),
             context,
@@ -683,7 +691,7 @@ impl CudaDevice {
             blas: Arc::new(blas),
             blas_lt,
             curand: Arc::new(Mutex::new(CudaRng(curand))),
-            modules: Arc::new(std::sync::RwLock::new(module_store)),
+            modules: Arc::new(std::sync::OnceLock::new()),
             custom_modules: Arc::new(std::sync::RwLock::new(HashMap::new())),
             seed_value: Arc::new(RwLock::new(299792458)),
         })
