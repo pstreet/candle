@@ -7,6 +7,7 @@ use crate::quantized::utils::{make_qkx3_quants, make_qp_quants};
 use crate::Result;
 use byteorder::{ByteOrder, LittleEndian};
 use half::{bf16, f16, slice::HalfFloatSliceExt};
+use rayon::prelude::*;
 
 #[cfg(target_arch = "aarch64")]
 use super::repack::BlockQ4Kx8;
@@ -2617,6 +2618,8 @@ pub fn matmul_f16<T: GgmlType>(
     let k_in_lhs_blocks = k.div_ceil(T::BLCK_SIZE);
     let k_in_rhs_blocks = k.div_ceil(T::VecDotType::BLCK_SIZE);
     let mut lhs_b = vec![T::VecDotType::zeros(); m * k_in_lhs_blocks];
+
+    // Convert all f16 rows to VecDotType in a single pass.
     for row_idx in 0..m {
         let lhs_b = &mut lhs_b[row_idx * k_in_lhs_blocks..(row_idx + 1) * k_in_lhs_blocks];
         let lhs = &lhs[row_idx * k..(row_idx + 1) * k];
@@ -2625,16 +2628,17 @@ pub fn matmul_f16<T: GgmlType>(
     }
     let lhs_b = lhs_b.as_slice();
 
-    for row_idx in 0..m {
-        let lhs_row = &lhs_b[row_idx * k_in_lhs_blocks..(row_idx + 1) * k_in_lhs_blocks];
-        let dst_row = &mut dst[row_idx * n..(row_idx + 1) * n];
-
-        for (col_idx, dst) in dst_row.iter_mut().enumerate() {
-            let rhs_col = &rhs_t[col_idx * k_in_rhs_blocks..(col_idx + 1) * k_in_rhs_blocks];
-            let value = T::vec_dot(k, rhs_col, lhs_row);
-            *dst = f16::from_f32(value);
-        }
-    }
+    // Parallel matmul over rows; each row is independent.
+    dst.par_chunks_mut(n)
+        .enumerate()
+        .for_each(|(row_idx, dst_row)| {
+            let lhs_row = &lhs_b[row_idx * k_in_lhs_blocks..(row_idx + 1) * k_in_lhs_blocks];
+            for (col_idx, dst) in dst_row.iter_mut().enumerate() {
+                let rhs_col = &rhs_t[col_idx * k_in_rhs_blocks..(col_idx + 1) * k_in_rhs_blocks];
+                let value = T::vec_dot(k, rhs_col, lhs_row);
+                *dst = f16::from_f32(value);
+            }
+        });
     Ok(())
 }
 
