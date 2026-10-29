@@ -10,7 +10,7 @@ use cudarc::driver::{
 };
 use half::{bf16, f16};
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, OnceLock, RwLock};
 
 // In a dual cuda+rocm build cudnn is disabled for both roles: cudarc-hip
 // has no cudnn surface, and the shared module declaration cannot differ
@@ -27,7 +27,7 @@ pub use utils::{Map1, Map1Any, Map2, Map2Any, Map2InPlace, Map3, S};
 
 type ParamCache = HashMap<(DeviceId, Vec<usize>), Arc<CudaSlice<usize>>>;
 
-static CUDA_PARAM_CACHE: OnceLock<Mutex<ParamCache>> = OnceLock::new();
+static CUDA_PARAM_CACHE: OnceLock<RwLock<ParamCache>> = OnceLock::new();
 
 pub enum SlicePtrOrNull<T> {
     Ptr(CudaSlice<T>),
@@ -94,43 +94,29 @@ impl SlicePtrOrNull<usize> {
         // race is possible there - and a stream sync during capture is
         // illegal (hip error 900).
         let untracked = !dev.is_event_tracking();
-        let capturing = dev.cuda_stream().capture_status()
-            != Ok(cudarc::driver::sys::CUstreamCaptureStatus::CU_STREAM_CAPTURE_STATUS_NONE);
-        let settle = untracked && !capturing;
-        if device::cuda_graph_htod_cache_enabled() {
-            let key = (dev.id(), params.clone());
-            let cache = CUDA_PARAM_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-            if let Some(slice) = cache.lock().unwrap().get(&key).cloned() {
-                return Ok(SlicePtrOrNull::Cached(slice));
-            }
+        let capt = dev.cuda_stream().capture_status()
+            == Ok(cudarc::driver::sys::CUstreamCaptureStatus::CU_STREAM_CAPTURE_STATUS_ACTIVE);
+        let settle = untracked && !capt;
 
-            let is_capturing = dev.cuda_stream().capture_status()
-                == Ok(cudarc::driver::sys::CUstreamCaptureStatus::CU_STREAM_CAPTURE_STATUS_ACTIVE);
-            if is_capturing {
-                crate::bail!(
-                    "h2d param cache miss during CUDA graph capture: \
-                     warmup did not populate all required parameter vectors"
-                );
-            }
+        let key = (dev.id(), params);
+        let cache = CUDA_PARAM_CACHE.get_or_init(|| RwLock::new(HashMap::new()));
 
-            let slice = Arc::new(dev.cuda_stream().clone_htod(&params).w()?);
-            // Settle the upload before publishing the entry: a second
-            // thread hitting the cache above must never observe a vector
-            // whose copy is still in flight (fault-hunt: garbage dims ->
-            // wild strided reads on never-allocated VAs). Unconditional:
-            // the consumer may live on another stream even with event
-            // tracking on, and this runs once per unique layout.
-            dev.cuda_stream().synchronize().w()?;
-            let mut cache = cache.lock().unwrap();
-            let slice = cache.entry(key).or_insert_with(|| slice).clone();
+        // Try read lock for cache hit.
+        if let Some(slice) = cache.read().unwrap().get(&key).cloned() {
             return Ok(SlicePtrOrNull::Cached(slice));
         }
 
-        let slice = dev.clone_htod(&params)?;
+        // Miss: upgrade to write lock. Release read lock first to avoid
+        // deadlock (some RwLock impls do not support read->write upgrade).
+        drop(cache.read().unwrap());
+        let slice = dev.clone_htod(&key.1)?;
         if settle {
             dev.cuda_stream().synchronize().w()?;
         }
-        Ok(SlicePtrOrNull::Ptr(slice))
+        let arc = Arc::new(slice);
+        let mut w = cache.write().unwrap();
+        let arc = w.entry(key).or_insert_with(|| arc.clone()).clone();
+        Ok(SlicePtrOrNull::Cached(arc))
     }
 
     pub fn params_from_layout(dev: &CudaDevice, l: &Layout) -> Result<Self> {
@@ -482,9 +468,12 @@ impl<U: UnaryOpT> Map1 for U {
 }
 
 fn slice_ptr<T: DeviceRepr>(v: &CudaSlice<T>, lo: usize) -> (u64, cudarc::driver::SyncOnDrop<'_>) {
-    let (_, guard) = v.device_ptr(v.stream());
-    let (ptr, _) = v.slice(lo..).device_ptr(v.stream());
-    (ptr, guard)
+    // Get base pointer + guard (stream event sync), then offset by lo.
+    // The sliced slice shares the same underlying allocation, so the
+    // base guard's event subsumes any per-slice event.
+    let (base_ptr, guard) = v.device_ptr(v.stream());
+    let offset = lo * std::mem::size_of::<T>();
+    (base_ptr + offset as u64, guard)
 }
 
 struct IndexSelect<'a>(&'a CudaStorage, &'a Layout, usize);
