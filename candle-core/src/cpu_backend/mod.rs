@@ -3,7 +3,7 @@ use crate::backend::{BackendDevice, BackendStorage};
 use crate::op::{BinaryOpT, CmpOp, ReduceOp, UnaryOpT};
 use crate::{DType, Error, IntDType, Layout, NdIter, Result, Shape, WithDType};
 use float8::F8E4M3;
-use half::{bf16, f16};
+use half::{bf16, f16, slice::HalfFloatSliceExt};
 use rayon::prelude::*;
 
 mod utils;
@@ -3088,17 +3088,23 @@ impl BackendStorage for CpuStorage {
         lhs_l: &Layout,
         rhs_l: &Layout,
     ) -> Result<Self> {
-        // no bf16 gemm kernel yet: widen to f32, multiply, narrow back
+        // no bf16 gemm kernel yet: widen to f32, multiply, narrow back.
+        // Use in-place convert_from/to_f32_slice instead of per-element
+        // collect() — avoids iterator overhead and allows SIMD under the hood.
         if let (Self::BF16(lhs_v), Self::BF16(rhs_v)) = (self, rhs) {
-            let lhs32 = Self::F32(lhs_v.iter().map(|v| v.to_f32()).collect());
-            let rhs32 = Self::F32(rhs_v.iter().map(|v| v.to_f32()).collect());
-            let out = MatMul(bmnk).map(&lhs32, lhs_l, &rhs32, rhs_l)?;
+            let n = lhs_v.len();
+            let mut lhs32 = vec![0f32; n];
+            lhs_v.convert_to_f32_slice(&mut lhs32);
+            let m = rhs_v.len();
+            let mut rhs32 = vec![0f32; m];
+            rhs_v.convert_to_f32_slice(&mut rhs32);
+            let out = MatMul(bmnk).map(&Self::F32(lhs32), lhs_l, &Self::F32(rhs32), rhs_l)?;
             let Self::F32(out_v) = out else {
                 crate::bail!("matmul dtype mismatch")
             };
-            return Ok(Self::BF16(
-                out_v.iter().map(|v| half::bf16::from_f32(*v)).collect(),
-            ));
+            let mut out_bf16 = vec![bf16::ZERO; out_v.len()];
+            out_bf16.convert_from_f32_slice(&out_v);
+            return Ok(Self::BF16(out_bf16));
         }
         MatMul(bmnk).map(self, lhs_l, rhs, rhs_l)
     }
