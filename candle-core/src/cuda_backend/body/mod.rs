@@ -164,6 +164,94 @@ pub fn kernel_name<T: WithDType>(root: &str) -> String {
     format!("{root}_{dtype}")
 }
 
+/// Pre-computed cast kernel names indexed by source and target dtype.
+/// Avoids format! allocations in the hot to_dtype path.
+pub fn cast_kernel_name(src: DType, tgt: DType) -> Option<&'static str> {
+    Some(match (src, tgt) {
+        (DType::U8, DType::U8) => "cast_u8_u8",
+        (DType::U8, DType::U32) => "cast_u8_u32",
+        (DType::U8, DType::I64) => "cast_u8_i64",
+        (DType::U8, DType::BF16) => "cast_u8_bf16",
+        (DType::U8, DType::F16) => "cast_u8_f16",
+        (DType::U8, DType::F32) => "cast_u8_f32",
+        (DType::U8, DType::F64) => "cast_u8_f64",
+        (DType::U8, DType::F8E4M3) => "cast_u8_f8e4m3",
+        (DType::U32, DType::U8) => "cast_u32_u8",
+        (DType::U32, DType::U32) => "cast_u32_u32",
+        (DType::U32, DType::I64) => "cast_u32_i64",
+        (DType::U32, DType::BF16) => "cast_u32_bf16",
+        (DType::U32, DType::F16) => "cast_u32_f16",
+        (DType::U32, DType::F32) => "cast_u32_f32",
+        (DType::U32, DType::F64) => "cast_u32_f64",
+        (DType::U32, DType::F8E4M3) => "cast_u32_f8e4m3",
+        (DType::I16, DType::U8) => "cast_i16_u8",
+        (DType::I16, DType::U32) => "cast_i16_u32",
+        (DType::I16, DType::I64) => "cast_i16_i64",
+        (DType::I16, DType::BF16) => "cast_i16_bf16",
+        (DType::I16, DType::F16) => "cast_i16_f16",
+        (DType::I16, DType::F32) => "cast_i16_f32",
+        (DType::I16, DType::F64) => "cast_i16_f64",
+        (DType::I16, DType::F8E4M3) => "cast_i16_f8e4m3",
+        (DType::I32, DType::U8) => "cast_i32_u8",
+        (DType::I32, DType::U32) => "cast_i32_u32",
+        (DType::I32, DType::I64) => "cast_i32_i64",
+        (DType::I32, DType::BF16) => "cast_i32_bf16",
+        (DType::I32, DType::F16) => "cast_i32_f16",
+        (DType::I32, DType::F32) => "cast_i32_f32",
+        (DType::I32, DType::F64) => "cast_i32_f64",
+        (DType::I32, DType::F8E4M3) => "cast_i32_f8e4m3",
+        (DType::I64, DType::U8) => "cast_i64_u8",
+        (DType::I64, DType::U32) => "cast_i64_u32",
+        (DType::I64, DType::I64) => "cast_i64_i64",
+        (DType::I64, DType::BF16) => "cast_i64_bf16",
+        (DType::I64, DType::F16) => "cast_i64_f16",
+        (DType::I64, DType::F32) => "cast_i64_f32",
+        (DType::I64, DType::F64) => "cast_i64_f64",
+        (DType::I64, DType::F8E4M3) => "cast_i64_f8e4m3",
+        (DType::BF16, DType::U8) => "cast_bf16_u8",
+        (DType::BF16, DType::U32) => "cast_bf16_u32",
+        (DType::BF16, DType::I64) => "cast_bf16_i64",
+        (DType::BF16, DType::BF16) => "cast_bf16_bf16",
+        (DType::BF16, DType::F16) => "cast_bf16_f16",
+        (DType::BF16, DType::F32) => "cast_bf16_f32",
+        (DType::BF16, DType::F64) => "cast_bf16_f64",
+        (DType::BF16, DType::F8E4M3) => "cast_bf16_f8e4m3",
+        (DType::F16, DType::U8) => "cast_f16_u8",
+        (DType::F16, DType::U32) => "cast_f16_u32",
+        (DType::F16, DType::I64) => "cast_f16_i64",
+        (DType::F16, DType::BF16) => "cast_f16_bf16",
+        (DType::F16, DType::F16) => "cast_f16_f16",
+        (DType::F16, DType::F32) => "cast_f16_f32",
+        (DType::F16, DType::F64) => "cast_f16_f64",
+        (DType::F16, DType::F8E4M3) => "cast_f16_f8e4m3",
+        (DType::F32, DType::U8) => "cast_f32_u8",
+        (DType::F32, DType::U32) => "cast_f32_u32",
+        (DType::F32, DType::I64) => "cast_f32_i64",
+        (DType::F32, DType::BF16) => "cast_f32_bf16",
+        (DType::F32, DType::F16) => "cast_f32_f16",
+        (DType::F32, DType::F32) => "cast_f32_f32",
+        (DType::F32, DType::F64) => "cast_f32_f64",
+        (DType::F32, DType::F8E4M3) => "cast_f32_f8e4m3",
+        (DType::F64, DType::U8) => "cast_f64_u8",
+        (DType::F64, DType::U32) => "cast_f64_u32",
+        (DType::F64, DType::I64) => "cast_f64_i64",
+        (DType::F64, DType::BF16) => "cast_f64_bf16",
+        (DType::F64, DType::F16) => "cast_f64_f16",
+        (DType::F64, DType::F32) => "cast_f64_f32",
+        (DType::F64, DType::F64) => "cast_f64_f64",
+        (DType::F64, DType::F8E4M3) => "cast_f64_f8e4m3",
+        (DType::F8E4M3, DType::U8) => "cast_f8e4m3_u8",
+        (DType::F8E4M3, DType::U32) => "cast_f8e4m3_u32",
+        (DType::F8E4M3, DType::I64) => "cast_f8e4m3_i64",
+        (DType::F8E4M3, DType::BF16) => "cast_f8e4m3_bf16",
+        (DType::F8E4M3, DType::F16) => "cast_f8e4m3_f16",
+        (DType::F8E4M3, DType::F32) => "cast_f8e4m3_f32",
+        (DType::F8E4M3, DType::F64) => "cast_f8e4m3_f64",
+        (DType::F8E4M3, DType::F8E4M3) => "cast_f8e4m3_f8e4m3",
+        _ => return None,
+    })
+}
+
 struct Affine(f64, f64);
 impl Map1 for Affine {
     fn f<T: DeviceRepr + WithDType>(
@@ -1794,8 +1882,12 @@ impl BackendStorage for CudaStorage {
         };
         let inp = &inp;
 
-        let kernel_name = format!("cast_{}_{}", self.dtype().as_str(), dtype.as_str());
-        let func = dev.get_or_load_func(&kernel_name, &kernels::CAST)?;
+        let kernel_name =
+            cast_kernel_name(self.dtype(), dtype).ok_or_else(|| CudaError::UnsupportedDtype {
+                dtype: self.dtype(),
+                op: "to_dtype",
+            })?;
+        let func = dev.get_or_load_func(kernel_name, &kernels::CAST)?;
         let slice = match dtype {
             DType::U8 => {
                 let out = unsafe { dev.alloc::<u8>(el)? };
