@@ -976,7 +976,7 @@ impl CudaStream {
         &self,
         len: usize,
     ) -> Result<CudaSlice<T>, DriverError> {
-        let mut slice = unsafe { self.alloc::<T>(len) }?;
+        let slice = unsafe { self.alloc::<T>(len) }?;
         if !slice.is_empty() {
             unsafe {
                 self.inner.ctx.bind_to_thread()?;

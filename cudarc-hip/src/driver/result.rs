@@ -1,5 +1,5 @@
 use super::sys;
-use std::os::raw::{c_char, c_int, c_uint, c_void};
+use std::os::raw::{c_int, c_uint, c_void};
 
 /// Error from a HIP runtime call, mirroring `cudarc::driver::DriverError`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
