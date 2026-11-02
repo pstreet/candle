@@ -12,11 +12,12 @@ use half::{bf16, f16};
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock, RwLock};
 
-// In a dual cuda+rocm build cudnn is disabled for both roles: cudarc-hip
-// has no cudnn surface, and the shared module declaration cannot differ
-// per role. Single-vendor builds keep it.
-#[cfg(all(feature = "cudnn", not(all(feature = "cuda", feature = "rocm"))))]
-pub mod cudnn;
+// cudnn module: role-dispatched. The NVIDIA role shell expands this gated on
+// the feature (dual cuda+rocm builds included); the AMD role shell (cudarc-hip
+// has no cudnn surface) never declares it.
+gpu_cudnn! {
+    pub mod cudnn;
+}
 mod device;
 mod error;
 mod utils;
@@ -2140,7 +2141,7 @@ impl BackendStorage for CudaStorage {
         Ok(Self { slice, device })
     }
 
-    #[cfg(not(feature = "cudnn"))]
+    gpu_cudnn_else! {
     fn conv1d(
         &self,
         l: &Layout,
@@ -2190,8 +2191,9 @@ impl BackendStorage for CudaStorage {
         res.copy_strided_src(&mut res_t, 0, &res_l)?;
         Ok(res_t)
     }
+    }
 
-    #[cfg(feature = "cudnn")]
+    gpu_cudnn! {
     fn conv1d(
         &self,
         inp_l: &Layout,
@@ -2261,6 +2263,7 @@ impl BackendStorage for CudaStorage {
         };
         Ok(Self { slice, device })
     }
+    }
 
     fn conv_transpose1d(
         &self,
@@ -2321,7 +2324,7 @@ impl BackendStorage for CudaStorage {
         Ok(Self { slice, device })
     }
 
-    #[cfg(not(feature = "cudnn"))]
+    gpu_cudnn_else! {
     fn conv2d(
         &self,
         l: &Layout,
@@ -2376,8 +2379,9 @@ impl BackendStorage for CudaStorage {
         res.copy_strided_src(&mut res_t, 0, &res_l)?;
         Ok(res_t)
     }
+    }
 
-    #[cfg(feature = "cudnn")]
+    gpu_cudnn! {
     fn conv2d(
         &self,
         inp_l: &Layout,
@@ -2446,6 +2450,7 @@ impl BackendStorage for CudaStorage {
             _ => Err(CudaError::InternalError("dtype mismatch in conv2d"))?,
         };
         Ok(Self { slice, device })
+    }
     }
 
     fn conv_transpose2d(

@@ -34,6 +34,17 @@ macro_rules! gpu_fork_managed {
     };
 }
 
+// cudarc-hip has no cudnn surface: the AMD role never declares the cudnn
+// module and always serves conv through the plain path, in every shape.
+macro_rules! gpu_cudnn {
+    ($($tokens:tt)*) => {};
+}
+macro_rules! gpu_cudnn_else {
+    ($($tokens:tt)*) => {
+        $($tokens)*
+    };
+}
+
 /// AMD role: kernels reach the driver as the embedded binary image, not
 /// PTX source (the hipcc path has no PTX text to JIT).
 macro_rules! gpu_ptx_load {

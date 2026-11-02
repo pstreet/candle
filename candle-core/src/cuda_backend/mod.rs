@@ -70,6 +70,29 @@ macro_rules! gpu_fork_managed {
     ($($tokens:tt)*) => {};
 }
 
+/// cudnn surface: present on the NVIDIA role's bound crate in every shape
+/// that enables the cudnn feature (dual cuda+rocm builds included), gated
+/// on that feature here. The AMD role shell inverts this dispatch:
+/// cudarc-hip has no cudnn surface, so on that role the module is never
+/// declared and conv serves through the plain path in every shape.
+#[cfg(feature = "cuda")]
+macro_rules! gpu_cudnn {
+    ($($tokens:tt)*) => {
+        #[cfg(feature = "cudnn")]
+        $($tokens)*
+    };
+}
+
+/// Companion to `gpu_cudnn!`: the plain-path (non-cudnn) branch, compiled
+/// wherever the cudnn branch above is absent or the feature is off.
+#[cfg(feature = "cuda")]
+macro_rules! gpu_cudnn_else {
+    ($($tokens:tt)*) => {
+        #[cfg(not(feature = "cudnn"))]
+        $($tokens)*
+    };
+}
+
 /// Role-owned device-location variant: the shared body cannot name it
 /// (both roles share the feature set), so each role shell defines which
 /// `DeviceLocation` variant its devices report.
