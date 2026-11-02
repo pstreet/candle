@@ -680,6 +680,8 @@ impl Tensor {
             #[cfg(feature = "rocm")]
             Storage::Hip(storage) => from_cpu_storage(&storage.to_cpu_storage()?),
             Storage::Metal(storage) => from_cpu_storage(&storage.to_cpu_storage()?),
+            #[cfg(feature = "npu")]
+            Storage::Npu(storage) => from_cpu_storage(&storage.to_cpu_storage()?),
         }
     }
 
@@ -1980,6 +1982,8 @@ impl Tensor {
             #[cfg(feature = "rocm")]
             Storage::Hip(storage) => from_cpu_storage(&storage.to_cpu_storage()?),
             Storage::Metal(storage) => from_cpu_storage(&storage.to_cpu_storage()?),
+            #[cfg(feature = "npu")]
+            Storage::Npu(storage) => from_cpu_storage(&storage.to_cpu_storage()?),
         }
     }
 
@@ -2013,6 +2017,8 @@ impl Tensor {
             #[cfg(feature = "rocm")]
             Storage::Hip(storage) => from_cpu_storage(&storage.to_cpu_storage()?),
             Storage::Metal(storage) => from_cpu_storage(&storage.to_cpu_storage()?),
+            #[cfg(feature = "npu")]
+            Storage::Npu(storage) => from_cpu_storage(&storage.to_cpu_storage()?),
         }
     }
 
@@ -2056,6 +2062,8 @@ impl Tensor {
             #[cfg(feature = "rocm")]
             Storage::Hip(storage) => from_cpu_storage(&storage.to_cpu_storage()?),
             Storage::Metal(storage) => from_cpu_storage(&storage.to_cpu_storage()?),
+            #[cfg(feature = "npu")]
+            Storage::Npu(storage) => from_cpu_storage(&storage.to_cpu_storage()?),
         }
     }
 
@@ -2433,6 +2441,17 @@ impl Tensor {
                     Storage::Hip(dst_storage)
                 }
                 (Storage::Cpu(storage), Device::Cpu) => Storage::Cpu(storage.clone()),
+                #[cfg(feature = "npu")]
+                (Storage::Cpu(storage), Device::Npu(npu)) => {
+                    Storage::Npu(npu.storage_from_cpu_storage(storage)?)
+                }
+                #[cfg(feature = "npu")]
+                (Storage::Npu(storage), Device::Cpu) => Storage::Cpu(storage.to_cpu_storage()?),
+                #[cfg(feature = "npu")]
+                (Storage::Npu(storage), Device::Npu(npu)) => {
+                    let dst_storage = storage.transfer_to_device(npu)?;
+                    Storage::Npu(dst_storage)
+                }
                 _ => {
                     bail!(
                         "not implemented yet, self.device: {:?}, device: {:?}",

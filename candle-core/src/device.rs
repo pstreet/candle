@@ -22,10 +22,17 @@ pub enum DeviceLocation {
     Hip {
         gpu_id: usize,
     },
+    /// NPU device (e.g. Strix Halo AIE). Unified memory: shares the same
+    /// physical RAM as the CPU; storage is backed by `CpuStorage`.
+    #[cfg(feature = "npu")]
+    Npu {
+        gpu_id: usize,
+    },
 }
 
-/// Cpu, Cuda, Metal, and Hip (rocm builds, solo or dual). In solo-rocm
-/// builds `Cuda` holds the dummy backend and is never constructed.
+/// Cpu, Cuda, Metal, Hip (rocm builds, solo or dual), and Npu (npu builds,
+/// Strix Halo AIE). In solo-rocm builds `Cuda` holds the dummy backend and
+/// is never constructed.
 #[derive(Debug, Clone)]
 pub enum Device {
     Cpu,
@@ -36,6 +43,10 @@ pub enum Device {
     /// the same physical card.
     #[cfg(feature = "rocm")]
     Hip(crate::HipDevice),
+    /// NPU device (AIE engine on Strix Halo). Unified memory: tensors live
+    /// in the same RAM as CPU, storage is backed by `CpuStorage`.
+    #[cfg(feature = "npu")]
+    Npu(crate::NpuDevice),
 }
 
 pub trait NdArray {
@@ -285,6 +296,8 @@ impl Device {
             Self::Metal(_) => crate::bail!("expected a cuda device, got Metal"),
             #[cfg(feature = "rocm")]
             Self::Hip(_) => crate::bail!("expected a cuda device, got hip"),
+            #[cfg(feature = "npu")]
+            Self::Npu(_) => crate::bail!("expected a cuda device, got Npu"),
         }
     }
 
@@ -295,6 +308,8 @@ impl Device {
             Self::Metal(d) => Ok(d),
             #[cfg(feature = "rocm")]
             Self::Hip(_) => crate::bail!("expected a metal device, got hip"),
+            #[cfg(feature = "npu")]
+            Self::Npu(_) => crate::bail!("expected a metal device, got Npu"),
         }
     }
 
@@ -366,6 +381,26 @@ impl Device {
         Ok(Self::Metal(crate::MetalDevice::new(ordinal)?))
     }
 
+    #[cfg(feature = "npu")]
+    pub fn new_npu(ordinal: usize) -> Result<Self> {
+        if !crate::npu_backend::is_npu_present() {
+            crate::bail!("npu device requested but no NPU runtime is loadable on this machine");
+        }
+        Ok(Self::Npu(crate::NpuDevice::new(ordinal)?))
+    }
+
+    #[cfg(feature = "npu")]
+    pub fn as_npu_device(&self) -> Result<&crate::NpuDevice> {
+        match self {
+            Self::Npu(d) => Ok(d),
+            Self::Cpu => crate::bail!("expected a npu device, got cpu"),
+            Self::Cuda(_) => crate::bail!("expected a npu device, got cuda"),
+            Self::Metal(_) => crate::bail!("expected a npu device, got Metal"),
+            #[cfg(feature = "rocm")]
+            Self::Hip(_) => crate::bail!("expected a npu device, got hip"),
+        }
+    }
+
     /// Run `f` with device specific context.
     ///
     /// On CPU this installs candle's private rayon thread pool for the
@@ -378,6 +413,8 @@ impl Device {
     {
         match self {
             Self::Cpu => crate::utils::with_threadpool(f),
+            #[cfg(feature = "npu")]
+            Self::Npu(_) => f(),
             _ => f(),
         }
     }
@@ -389,6 +426,8 @@ impl Device {
             Self::Metal(m) => m.set_seed(seed),
             #[cfg(feature = "rocm")]
             Self::Hip(h) => h.set_seed(seed),
+            #[cfg(feature = "npu")]
+            Self::Npu(n) => n.set_seed(seed),
         }
     }
 
@@ -399,6 +438,8 @@ impl Device {
             Self::Metal(m) => m.get_current_seed(),
             #[cfg(feature = "rocm")]
             Self::Hip(h) => h.get_current_seed(),
+            #[cfg(feature = "npu")]
+            Self::Npu(n) => n.get_current_seed(),
         }
     }
 
@@ -409,6 +450,8 @@ impl Device {
             (Self::Metal(lhs), Self::Metal(rhs)) => lhs.same_device(rhs),
             #[cfg(feature = "rocm")]
             (Self::Hip(lhs), Self::Hip(rhs)) => lhs.same_device(rhs),
+            #[cfg(feature = "npu")]
+            (Self::Npu(lhs), Self::Npu(rhs)) => lhs.same_device(rhs),
             _ => false,
         }
     }
@@ -420,6 +463,8 @@ impl Device {
             Device::Metal(device) => device.location(),
             #[cfg(feature = "rocm")]
             Self::Hip(device) => device.location(),
+            #[cfg(feature = "npu")]
+            Self::Npu(device) => device.location(),
         }
     }
 
@@ -440,11 +485,18 @@ impl Device {
         matches!(self, Self::Hip(_))
     }
 
+    #[cfg(feature = "npu")]
+    pub fn is_npu(&self) -> bool {
+        matches!(self, Self::Npu(_))
+    }
+
     pub fn supports_bf16(&self) -> bool {
         match self {
             Self::Cuda(_) | Self::Metal(_) => true,
             #[cfg(feature = "rocm")]
             Self::Hip(_) => true,
+            #[cfg(feature = "npu")]
+            Self::Npu(_) => true,
             Self::Cpu => false,
         }
     }
@@ -511,6 +563,11 @@ impl Device {
                 let storage = device.rand_uniform(shape, dtype, lo, up)?;
                 Ok(Storage::Metal(storage))
             }
+            #[cfg(feature = "npu")]
+            Device::Npu(device) => {
+                let storage = device.rand_uniform(shape, dtype, lo, up)?;
+                Ok(Storage::Npu(storage))
+            }
         }
     }
 
@@ -560,6 +617,11 @@ impl Device {
                 let storage = device.rand_normal(shape, dtype, mean, std)?;
                 Ok(Storage::Metal(storage))
             }
+            #[cfg(feature = "npu")]
+            Device::Npu(device) => {
+                let storage = device.rand_normal(shape, dtype, mean, std)?;
+                Ok(Storage::Npu(storage))
+            }
         }
     }
 
@@ -591,6 +653,11 @@ impl Device {
                 let storage = device.zeros_impl(shape, dtype)?;
                 Ok(Storage::Metal(storage))
             }
+            #[cfg(feature = "npu")]
+            Device::Npu(device) => {
+                let storage = device.zeros_impl(shape, dtype)?;
+                Ok(Storage::Npu(storage))
+            }
         }
     }
 
@@ -613,6 +680,11 @@ impl Device {
                 let storage = device.alloc_uninit(shape, dtype)?;
                 Ok(Storage::Metal(storage))
             }
+            #[cfg(feature = "npu")]
+            Device::Npu(device) => {
+                let storage = device.alloc_uninit(shape, dtype)?;
+                Ok(Storage::Npu(storage))
+            }
         }
     }
 
@@ -631,6 +703,11 @@ impl Device {
             Device::Metal(device) => {
                 let storage = device.storage_from_slice(data)?;
                 Ok(Storage::Metal(storage))
+            }
+            #[cfg(feature = "npu")]
+            Device::Npu(device) => {
+                let storage = device.storage_from_slice(data)?;
+                Ok(Storage::Npu(storage))
             }
         }
     }
@@ -654,6 +731,12 @@ impl Device {
                 let storage = device.storage_from_cpu_storage_owned(storage)?;
                 Ok(Storage::Metal(storage))
             }
+            #[cfg(feature = "npu")]
+            Device::Npu(device) => {
+                let storage = array.to_cpu_storage();
+                let storage = device.storage_from_cpu_storage_owned(storage)?;
+                Ok(Storage::Npu(storage))
+            }
         }
     }
 
@@ -676,6 +759,12 @@ impl Device {
                 let storage = device.storage_from_cpu_storage_owned(storage)?;
                 Ok(Storage::Metal(storage))
             }
+            #[cfg(feature = "npu")]
+            Device::Npu(device) => {
+                let storage = S::to_cpu_storage_owned(data);
+                let storage = device.storage_from_cpu_storage_owned(storage)?;
+                Ok(Storage::Npu(storage))
+            }
         }
     }
 
@@ -686,6 +775,8 @@ impl Device {
             Self::Metal(d) => d.synchronize(),
             #[cfg(feature = "rocm")]
             Self::Hip(d) => d.synchronize(),
+            #[cfg(feature = "npu")]
+            Self::Npu(d) => d.synchronize(),
         }
     }
 }

@@ -181,6 +181,71 @@ cargo run --example quantized-qwen3-moe --release --features rocm -- \
 Set `CANDLE_GRAPH_EAGER=1` to run the same capture-safe code path eagerly,
 without recording a graph — useful for isolating graph capture issues.
 
+## AMD Ryzen AI NPU (Strix Halo / XDNA 2)
+
+The `npu` feature builds a CPU-delegated NPU backend for unified-memory devices
+(AMD Ryzen AI MAX/Strix Halo with the `amdxdna` kernel driver and XRT NPU2).
+On unified memory the NPU and CPU share the same physical RAM, so tensor ops
+delegate to the CPU backend and the NPU device is used only for dispatch and
+synchronization. AIE kernel acceleration (via MLIR-AIE + Peano) is under active
+development.
+
+```bash
+cargo build --release --features npu -p candle-core
+```
+
+### NPU dependencies (system)
+
+```bash
+sudo apt-get install -y \
+    libxrt-dev libxrt2 libxrt-npu2 python3-xrt linux-firmware-amd-misc
+```
+
+The driver requires kernel 6.17+ (the `amdxdna` module). Check with:
+
+```bash
+lsmod | grep amdxdna        # should show loaded
+ls /dev/dri/card0 card1     # XRT NPU device nodes
+```
+
+### MLIR-AIE + Peano (AIE kernel compilation)
+
+To write and compile AIE kernels that actually run on the NPU, install the
+open-source toolchain:
+
+```bash
+# Create venv (once)
+python3 -m venv ~/.local/share/ironenv
+source ~/.local/share/ironenv/bin/activate
+pip install --upgrade pip
+
+# Install MLIR-AIE 1.4.4 + Peano llvm-aie (Peano)
+pip install mlir_aie==1.4.4 -f https://github.com/Xilinx/mlir-aie/releases/download/v1.4.4/
+pip install -f https://github.com/Xilinx/llvm-aie/releases/expanded_assets/nightly \
+    "llvm-aie==22.0.0.2026092101+0006955e"
+
+# Verify
+aiecc --version              # MLIR-AIE compiler driver
+~/.local/share/ironenv/lib/python3.13/site-packages/llvm-aie/bin/clang --version
+```
+
+Wheel files are cached in the project root for reproducible builds without
+network access. The full setup script is at
+`scripts/setup-npu-aie.sh`.
+
+### AIE kernel compilation workflow
+
+```
+AIE C++ kernel  →  Peano (per-core clang)  →  .xo object
+MLIR-AIE Python →  aiecc                   →  .xclbin
+.xo + .xclbin   →  xclbinutil              →  linked executable
+```
+
+The `mistralrs-npu` crate provides the XRT bridge that loads compiled kernels
+and dispatches them on the NPU. See
+[mistralrs-npu/AIE_KERNEL_PLAN.md](../mistral.rs/mistralrs-npu/AIE_KERNEL_PLAN.md)
+for the development plan.
+
 A few more ROCm knobs, all optional:
 
 ```bash
@@ -623,3 +688,30 @@ The `rocm_basics` example under [candle-core](./candle-core/examples/) checks
 the basic GPU ops plus a capture/replay round-trip, and `moe_gguf_check` under
 [candle-examples](./candle-examples/) verifies the MoE/QMatMul FFI kernels
 numerically against CPU references.
+
+#### NPU: XRT runtime not found when building with `--features npu`
+
+The build succeeds but the runtime probe returns false (model falls back to CPU)
+when `libxrt_coreutil.so.2` is not in the library path. Install the XRT NPU
+distro packages:
+
+```bash
+sudo apt-get install -y libxrt-dev libxrt2 libxrt-npu2
+```
+
+If you built XRT from source, point `LD_LIBRARY_PATH` at the XRT lib directory.
+The probe checks the standard Ubuntu path
+`/usr/lib/x86_64-linux-gnu/` and `/opt/xilinx/xrt/lib/` first, then falls back
+to the system loader.
+
+#### NPU: /dev/accel/accel0 not found
+
+The `amdxdna` kernel module must be loaded. On a supported Strix Halo system:
+
+```bash
+sudo modprobe amdxdna
+ls /dev/accel/accel0   # should exist
+```
+
+Kernel 6.17+ is required. On older kernels the NPU may appear only as a generic
+PCI device and is not usable.

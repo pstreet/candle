@@ -161,6 +161,16 @@ fn quantized_matmul(device: &Device) -> Result<()> {
                 [342030.0, 994630.0, 1656248.0, 2302250.0]
             ]
         ),
+        // NPU quantized matmul uses CPU storage path.
+        #[cfg(feature = "npu")]
+        Device::Npu(_) => assert_eq!(
+            to_vec2_round(&res, 0)?,
+            &[
+                [85120.0, 214562.0, 345455.0, 474748.0],
+                [213475.0, 604465.0, 1000686.0, 1388317.0],
+                [341876.0, 994283.0, 1655709.0, 2301518.0]
+            ]
+        ),
     }
     test_matmul(device, (1, 3, 4, 256), GgmlDType::Q4_0)?;
     Ok(())
@@ -235,6 +245,16 @@ fn quantized_matmul_neg(device: &Device) -> Result<()> {
                 [243740.0, -19762.0, -285476.0, -550498.0],
                 [23774.0, 21645.0, 19395.0, 18364.0],
                 [-196045.0, 63030.0, 324120.0, 587079.0]
+            ]
+        ),
+        // NPU quantized matmul uses CPU storage path.
+        #[cfg(feature = "npu")]
+        Device::Npu(_) => assert_eq!(
+            to_vec2_round(&res, 0)?,
+            &[
+                [243524.0, -19596.0, -285051.0, -549815.0],
+                [23777.0, 21651.0, 19398.0, 18367.0],
+                [-196472.0, 63012.0, 324585.0, 587902.0]
             ]
         ),
     }

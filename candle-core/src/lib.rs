@@ -72,6 +72,10 @@ mod indexer;
 pub mod layout;
 #[cfg(feature = "metal")]
 pub mod metal_backend;
+#[cfg(feature = "npu")]
+pub mod npu_backend;
+#[cfg(not(feature = "npu"))]
+mod dummy_npu_backend;
 #[cfg(feature = "mkl")]
 mod mkl;
 pub mod nditer;
@@ -134,6 +138,10 @@ pub use metal_backend::{MetalDevice, MetalError, MetalStorage};
 
 #[cfg(not(feature = "metal"))]
 pub use dummy_metal_backend::{MetalDevice, MetalError, MetalStorage};
+#[cfg(not(feature = "npu"))]
+pub use dummy_npu_backend::{NpuDevice, NpuStorage};
+#[cfg(feature = "npu")]
+pub use npu_backend::{NpuDevice, NpuStorage};
 
 #[cfg(feature = "mkl")]
 extern crate intel_mkl_src;

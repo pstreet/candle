@@ -83,6 +83,7 @@ metal = [
 ]
 metal-debug-labels = ["metal", "candle-metal-kernels/debug-labels"]
 ug = ["dep:candle-ug"]
+npu = []
 
 [[bench]]
 name = "bench_main"

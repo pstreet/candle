@@ -132,6 +132,8 @@ fn from_raw_data<T: super::GgmlType + Send + Sync + 'static>(
         Device::Cuda(cuda) => super::cuda::load_quantized(cuda, data)?,
         #[cfg(feature = "rocm")]
         Device::Hip(hip_dev) => super::hip::load_quantized(hip_dev, data)?,
+        #[cfg(feature = "npu")]
+        Device::Npu(_npu) => QStorage::Npu(Box::new(data.to_vec())),
     };
     super::QTensor::new(data, dims)
 }

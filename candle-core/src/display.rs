@@ -22,6 +22,10 @@ impl Tensor {
             crate::DeviceLocation::Hip { gpu_id } => {
                 format!(", hip:{gpu_id}")
             }
+            #[cfg(feature = "npu")]
+            crate::DeviceLocation::Npu { gpu_id } => {
+                format!(", npu:{gpu_id}")
+            }
         };
 
         write!(f, "Tensor[")?;
@@ -552,6 +556,10 @@ impl std::fmt::Display for Tensor {
             #[cfg(feature = "rocm")]
             crate::DeviceLocation::Hip { gpu_id } => {
                 format!(", hip:{gpu_id}")
+            }
+            #[cfg(feature = "npu")]
+            crate::DeviceLocation::Npu { gpu_id } => {
+                format!(", npu:{gpu_id}")
             }
         };
 

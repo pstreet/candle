@@ -26,6 +26,7 @@
     - [Writing a custom kernel]()
     - [Porting a custom kernel]()
 - [Advanced ROCm usage](rocm/README.md)
+- [Advanced NPU usage](npu/README.md)
 - [Using MKL]()
 - [Creating apps]()
     - [Creating a WASM app]()

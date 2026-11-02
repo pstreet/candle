@@ -58,6 +58,32 @@ Add the `candle-core` crate with the metal feature:
 cargo add --git https://github.com/huggingface/candle.git candle-core --features "metal"
 ```
 
+### AMD Ryzen AI NPU (Strix Halo)
+
+The `npu` feature builds a CPU-delegated NPU backend for unified-memory
+devices. On Strix Halo the NPU and CPU share the same physical RAM so tensor
+ops delegate to the CPU backend; the NPU device is used for dispatch and
+synchronization. AIE kernel acceleration is under development.
+
+System dependencies:
+
+```bash
+sudo apt-get install -y libxrt-dev libxrt2 libxrt-npu2 python3-xrt linux-firmware-amd-misc
+```
+
+Verify the kernel driver:
+
+```bash
+lsmod | grep amdxdna          # must show loaded
+ls /dev/dri/card0 /dev/dri/card1  # device nodes
+```
+
+Add the `candle-core` crate with the npu feature:
+
+```bash
+cargo add --git https://github.com/huggingface/candle.git candle-core --features "npu"
+```
+
 ## 3. Building
 
 Run `cargo build` to make sure everything can be correctly built.

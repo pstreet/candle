@@ -91,6 +91,11 @@ impl Device {
                 let storage = hip::QCudaStorage::zeros(d, elem_count, dtype)?;
                 Ok(QStorage::Hip(storage))
             }
+            #[cfg(feature = "npu")]
+            Device::Npu(_npu) => {
+                let storage = dtype.cpu_zeros(elem_count);
+                Ok(QStorage::Npu(storage))
+            }
         }
     }
 }
@@ -101,6 +106,9 @@ pub enum QStorage {
     Cuda(cuda::QCudaStorage),
     #[cfg(feature = "rocm")]
     Hip(hip::QCudaStorage),
+    /// NPU quantized storage (Strix Halo AIE). Backed by CPU on unified memory.
+    #[cfg(feature = "npu")]
+    Npu(Box<dyn QuantizedType>),
 }
 
 impl QStorage {
@@ -160,6 +168,8 @@ impl QStorage {
                 GgmlDType::Q8K => hip::load_quantized(d, as_t_slice::<BlockQ8K>(data)),
                 GgmlDType::BF16 => hip::load_quantized(d, as_t_slice::<bf16>(data)),
             },
+            #[cfg(feature = "npu")]
+            Device::Npu(_npu) => Ok(QStorage::Npu(dtype.from_data(Cow::Borrowed(data)))),
         }
     }
 
@@ -223,6 +233,8 @@ impl QStorage {
                 GgmlDType::Q8K => hip::load_quantized_managed(d, as_t_slice::<BlockQ8K>(data)),
                 GgmlDType::BF16 => hip::load_quantized_managed(d, as_t_slice::<bf16>(data)),
             },
+            #[cfg(feature = "npu")]
+            Device::Npu(_npu) => Ok(QStorage::Npu(dtype.from_data(Cow::Borrowed(data)))),
         }
     }
 
@@ -233,6 +245,8 @@ impl QStorage {
             QStorage::Cuda(storage) => storage.dtype().block_size(),
             #[cfg(feature = "rocm")]
             QStorage::Hip(storage) => storage.dtype().block_size(),
+            #[cfg(feature = "npu")]
+            QStorage::Npu(storage) => storage.block_size(),
         }
     }
 
@@ -243,6 +257,8 @@ impl QStorage {
             QStorage::Cuda(storage) => storage.dtype(),
             #[cfg(feature = "rocm")]
             QStorage::Hip(storage) => storage.dtype(),
+            #[cfg(feature = "npu")]
+            QStorage::Npu(storage) => storage.dtype(),
         }
     }
 
@@ -253,6 +269,8 @@ impl QStorage {
             QStorage::Cuda(storage) => Device::Cuda(storage.device().clone()),
             #[cfg(feature = "rocm")]
             QStorage::Hip(storage) => Device::Hip(storage.device().clone()),
+            #[cfg(feature = "npu")]
+            QStorage::Npu(_storage) => Device::Npu(crate::npu_backend::npu_device_static().clone()),
         }
     }
 
@@ -263,6 +281,8 @@ impl QStorage {
             QStorage::Cuda(storage) => storage.storage_size_in_bytes(),
             #[cfg(feature = "rocm")]
             QStorage::Hip(storage) => storage.storage_size_in_bytes(),
+            #[cfg(feature = "npu")]
+            QStorage::Npu(storage) => storage.storage_size_in_bytes(),
         }
     }
 
@@ -275,6 +295,10 @@ impl QStorage {
             (QStorage::Cuda(storage), Storage::Cuda(src)) => storage.quantize(src)?,
             #[cfg(feature = "rocm")]
             (QStorage::Hip(storage), Storage::Hip(src)) => storage.quantize(src)?,
+            #[cfg(feature = "npu")]
+            (QStorage::Npu(storage), Storage::Npu(src)) => {
+                storage.from_float(src.inner().as_slice::<f32>()?);
+            }
             _ => crate::bail!("Invalid quantize storage locations do not match"),
         }
         Ok(())
@@ -300,6 +324,14 @@ impl QStorage {
             (QStorage::Hip(storage), Storage::Hip(src)) => {
                 storage.quantize_imatrix(src, imatrix_weights, n_per_row)?
             }
+            #[cfg(feature = "npu")]
+            (QStorage::Npu(storage), Storage::Npu(src)) => {
+                storage.from_float_imatrix(
+                    src.inner().as_slice::<f32>()?,
+                    imatrix_weights,
+                    n_per_row,
+                );
+            }
             _ => crate::bail!("Invalid quantize storage locations do not match"),
         }
         Ok(())
@@ -314,6 +346,10 @@ impl QStorage {
             (QStorage::Cuda(storage), Storage::Cpu(src)) => storage.quantize_onto(src)?,
             #[cfg(feature = "rocm")]
             (QStorage::Hip(storage), Storage::Cpu(src)) => storage.quantize_onto(src)?,
+            #[cfg(feature = "npu")]
+            (QStorage::Npu(storage), Storage::Cpu(src)) => {
+                storage.from_float(src.as_slice::<f32>()?);
+            }
             _ => crate::bail!("Invalid quantize source storage locations: not on cpu"),
         }
         Ok(())
@@ -339,6 +375,10 @@ impl QStorage {
             (QStorage::Hip(storage), Storage::Cpu(src)) => {
                 storage.quantize_imatrix_onto(src, imatrix_weights, n_per_row)?
             }
+            #[cfg(feature = "npu")]
+            (QStorage::Npu(storage), Storage::Cpu(src)) => {
+                storage.from_float_imatrix(src.as_slice::<f32>()?, imatrix_weights, n_per_row);
+            }
             _ => crate::bail!("Invalid quantize storage locations do not match"),
         }
         Ok(())
@@ -351,6 +391,14 @@ impl QStorage {
             QStorage::Cuda(storage) => Ok(Storage::Cuda(storage.dequantize(elem_count)?)),
             #[cfg(feature = "rocm")]
             QStorage::Hip(storage) => Ok(Storage::Hip(storage.dequantize(elem_count)?)),
+            #[cfg(feature = "npu")]
+            QStorage::Npu(storage) => {
+                let cpu_storage = storage.dequantize(elem_count)?;
+                Ok(Storage::Npu(crate::NpuStorage {
+                    inner: cpu_storage,
+                    backend: crate::npu_backend::FallbackBackend::open_device(0).unwrap(),
+                }))
+            }
         }
     }
 
@@ -366,6 +414,13 @@ impl QStorage {
             #[cfg(feature = "rocm")]
             QStorage::Hip(storage) => Ok(Cow::from(storage.data()?)),
             QStorage::Metal(storage) => Ok(Cow::from(storage.data()?)),
+            #[cfg(feature = "npu")]
+            QStorage::Npu(storage) => {
+                let data_ptr = storage.as_ptr();
+                let size_in_bytes = storage.storage_size_in_bytes();
+                let data = unsafe { std::slice::from_raw_parts(data_ptr, size_in_bytes) };
+                Ok(Cow::from(data))
+            }
         }
     }
 
@@ -374,6 +429,8 @@ impl QStorage {
             QStorage::Cuda(storage) => storage.device_ptr(),
             #[cfg(feature = "rocm")]
             QStorage::Hip(storage) => storage.device_ptr(),
+            #[cfg(feature = "npu")]
+            QStorage::Npu(_) => crate::bail!("not implemented"),
             QStorage::Metal(_) | QStorage::Cpu(_) => {
                 crate::bail!("not implemented");
             }
@@ -398,6 +455,8 @@ impl QStorage {
             QStorage::Metal(_) | QStorage::Cpu(_) => {
                 crate::bail!("not implemented");
             }
+            #[cfg(feature = "npu")]
+            QStorage::Npu(_) => crate::bail!("not implemented"),
         }
     }
 }
@@ -899,6 +958,14 @@ impl QTensor {
                 }
                 _ => unreachable!("ids were moved to the QTensor device"),
             },
+            #[cfg(feature = "npu")]
+            QStorage::Npu(storage) => {
+                let ids = ids.to_vec1::<u32>()?;
+                Storage::Npu(crate::NpuStorage {
+                    inner: storage.embedding(&ids, rows, hidden)?,
+                    backend: crate::npu_backend::FallbackBackend::open_device(0).unwrap(),
+                })
+            }
         };
         let none = crate::op::BackpropOp::none();
         Ok(crate::tensor::from_storage(storage, out_shape, none, false))
@@ -966,6 +1033,8 @@ impl QTensor {
             QStorage::Cuda(storage) => storage.device_ptr(),
             #[cfg(feature = "rocm")]
             QStorage::Hip(storage) => storage.device_ptr(),
+            #[cfg(feature = "npu")]
+            QStorage::Npu(_) => crate::bail!("not implemented"),
             QStorage::Metal(_) | QStorage::Cpu(_) => {
                 crate::bail!("not implemented");
             }
@@ -1212,6 +1281,8 @@ impl QTensor {
     pub(crate) fn storage_ref(&self) -> &dyn QuantizedType {
         match &self.storage {
             QStorage::Cpu(s) => s.as_ref(),
+            #[cfg(feature = "npu")]
+            QStorage::Npu(s) => s.as_ref(),
             _ => unreachable!("cpu-only path"),
         }
     }
@@ -1503,6 +1574,8 @@ impl crate::CustomOp1 for QTensor {
         #[allow(clippy::infallible_destructuring_match)]
         let self_storage = match &self.storage {
             QStorage::Cpu(storage) => storage,
+            #[cfg(feature = "npu")]
+            QStorage::Npu(storage) => storage,
             QStorage::Metal(_) | QStorage::Cuda(_) => crate::bail!("Invalid storage"),
             #[cfg(feature = "rocm")]
             QStorage::Hip(_) => crate::bail!("Invalid storage"),
