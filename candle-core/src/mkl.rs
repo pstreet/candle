@@ -60,21 +60,81 @@ mod ffi {
             c: *mut c_double,
             ldc: *const c_int,
         );
-        pub fn hgemm_(
-            transa: *const c_char,
-            transb: *const c_char,
-            m: *const c_int,
-            n: *const c_int,
-            k: *const c_int,
-            alpha: *const half::f16,
-            a: *const half::f16,
-            lda: *const c_int,
-            b: *const half::f16,
-            ldb: *const c_int,
-            beta: *const half::f16,
-            c: *mut half::f16,
-            ldc: *const c_int,
+    }
+}
+
+// The pinned MKL statics (rust-mkl 2020.1) export sgemm_/dgemm_ but not
+// hgemm_. Expand to f32, run sgemm, round back to f16: f16 -> f32 is exact
+// and accumulation happens in f32, so results are at least as precise.
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn hgemm_(
+    transa: *const c_char,
+    transb: *const c_char,
+    m: *const c_int,
+    n: *const c_int,
+    k: *const c_int,
+    alpha: *const half::f16,
+    a: *const half::f16,
+    lda: *const c_int,
+    b: *const half::f16,
+    ldb: *const c_int,
+    beta: *const half::f16,
+    c: *mut half::f16,
+    ldc: *const c_int,
+) {
+    let (m, n, k, lda, ldb, ldc) = (*m, *n, *k, *lda, *ldb, *ldc);
+    let (ta, tb) = (*transa as u8, *transb as u8);
+
+    // Exact BLAS touch windows: A'N' reads a[j*lda+i], i<m, j<k; 'T'/'C'
+    // swap to a[i*lda+j]. B and C follow the same rule (netlib sgemm).
+    let a_len: usize = match ta {
+        b'N' => ((k as i64 - 1) * lda as i64 + m as i64).max(0) as usize,
+        _ => ((m as i64 - 1) * lda as i64 + k as i64).max(0) as usize,
+    };
+    let b_len: usize = match tb {
+        b'N' => ((n as i64 - 1) * ldb as i64 + k as i64).max(0) as usize,
+        _ => ((k as i64 - 1) * ldb as i64 + n as i64).max(0) as usize,
+    };
+    let c_window: i64 = (n as i64 - 1) * ldc as i64 + m as i64;
+    let c_window: usize = c_window.max(0) as usize;
+
+    let a_s = unsafe { std::slice::from_raw_parts(a, a_len) };
+    let b_s = unsafe { std::slice::from_raw_parts(b, b_len) };
+    let c_s = unsafe { std::slice::from_raw_parts_mut(c, c_window) };
+
+    // Positional expand keeps the BLAS layout; sgemm consumes it unchanged.
+    let mut fa = a_s.iter().map(|v| v.to_f32()).collect::<Vec<_>>();
+    let mut fb = b_s.iter().map(|v| v.to_f32()).collect::<Vec<_>>();
+
+    let mut fc = vec![0f32; c_window];
+    let beta_f = (*beta).to_f32();
+    for (fc_v, c_v) in fc.iter_mut().zip(c_s.iter()) {
+        *fc_v = c_v.to_f32() * beta_f;
+    }
+    let alpha_f = (*alpha).to_f32();
+    let (ta_c, tb_c) = (ta as c_char, tb as c_char);
+    unsafe {
+        ffi::sgemm_(
+            &ta_c,
+            &tb_c,
+            &m,
+            &n,
+            &k,
+            &alpha_f,
+            fa.as_ptr(),
+            &lda,
+            fb.as_ptr(),
+            &ldb,
+            &beta_f,
+            fc.as_mut_ptr(),
+            &ldc,
         );
+        for j in 0..n {
+            for i in 0..m {
+                let idx = j as usize * ldc as usize + i as usize;
+                c_s[idx] = half::f16::from_f32(fc[idx]);
+            }
+        }
     }
 }
 
@@ -163,7 +223,7 @@ pub unsafe fn hgemm(
     c: &mut [half::f16],
     ldc: i32,
 ) {
-    ffi::hgemm_(
+    hgemm_(
         &(transa as c_char),
         &(transb as c_char),
         &m,
@@ -416,3 +476,106 @@ binary_op!(vs_max, f32, vsFmax);
 binary_op!(vd_max, f64, vdFmax);
 binary_op!(vs_min, f32, vsFmin);
 binary_op!(vd_min, f64, vdFmin);
+
+#[cfg(test)]
+mod tests {
+    use half::f16;
+    // f16 accent: via to_f32/from_f32 traits.
+
+    fn naive_matmul(a: &[f16], b: &[f16], m: usize, k: usize, n: usize) -> Vec<f16> {
+        let mut c = vec![f16::ZERO; m * n];
+        for j in 0..n {
+            for i in 0..m {
+                let mut acc = 0f32;
+                for t in 0..k {
+                    acc += a[t * m + i].to_f32() * b[j * k + t].to_f32();
+                }
+                c[j * m + i] = f16::from_f32(acc);
+            }
+        }
+        c
+    }
+
+    #[test]
+    fn hgemm_shim_matches_reference() {
+        // Col-major m x k and k x n operands; N/N and T/N against the same
+        // reference product.
+        let (m, k, n) = (3usize, 2usize, 4usize);
+        let a: Vec<f16> = (0..m * k)
+            .map(|i| f16::from_f32((i % 7) as f32 + 1.0))
+            .collect();
+        let b: Vec<f16> = (0..k * n)
+            .map(|i| f16::from_f32((i * 3 % 5) as f32 + 1.0))
+            .collect();
+        let mut at = vec![f16::ZERO; k * m];
+        for j in 0..m {
+            for i in 0..k {
+                at[j * k + i] = a[i * m + j];
+            }
+        }
+        let expect = naive_matmul(&a, &b, m, k, n);
+
+        unsafe {
+            let mut c_nn = vec![f16::ZERO; m * n];
+            super::hgemm(
+                b'N',
+                b'N',
+                m as i32,
+                n as i32,
+                k as i32,
+                f16::ONE,
+                &a,
+                m as i32,
+                &b,
+                k as i32,
+                f16::ZERO,
+                &mut c_nn,
+                m as i32,
+            );
+            assert_eq!(c_nn, expect, "N/N mismatch");
+
+            let mut c_tn = vec![f16::ZERO; m * n];
+            super::hgemm(
+                b'T',
+                b'N',
+                m as i32,
+                n as i32,
+                k as i32,
+                f16::ONE,
+                &at,
+                k as i32,
+                &b,
+                k as i32,
+                f16::ZERO,
+                &mut c_tn,
+                m as i32,
+            );
+            assert_eq!(c_tn, expect, "T/N mismatch");
+
+            // Accumulation: beta=1 on a prefilled C adds the reference product.
+            let mut c_acc = vec![f16::from_f32(2.5); m * n];
+            super::hgemm(
+                b'N',
+                b'N',
+                m as i32,
+                n as i32,
+                k as i32,
+                f16::ONE,
+                &a,
+                m as i32,
+                &b,
+                k as i32,
+                f16::ONE,
+                &mut c_acc,
+                m as i32,
+            );
+            for (i, e) in expect.iter().enumerate() {
+                let want = c_nn[i].to_f32() + 2.5;
+                assert!(
+                    (c_acc[i].to_f32() - want).abs() < 1e-2,
+                    "beta=1 mismatch at {i}"
+                );
+            }
+        }
+    }
+}
