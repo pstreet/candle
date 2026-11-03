@@ -64,6 +64,8 @@ mod dtype;
 pub mod dummy_cuda_backend;
 pub mod dummy_dtype;
 mod dummy_metal_backend;
+#[cfg(not(feature = "npu"))]
+mod dummy_npu_backend;
 pub mod error;
 pub mod gpu;
 #[cfg(feature = "rocm")]
@@ -72,13 +74,11 @@ mod indexer;
 pub mod layout;
 #[cfg(feature = "metal")]
 pub mod metal_backend;
-#[cfg(feature = "npu")]
-pub mod npu_backend;
-#[cfg(not(feature = "npu"))]
-mod dummy_npu_backend;
 #[cfg(feature = "mkl")]
 mod mkl;
 pub mod nditer;
+#[cfg(feature = "npu")]
+pub mod npu_backend;
 pub mod npy;
 pub mod op;
 pub mod pickle;

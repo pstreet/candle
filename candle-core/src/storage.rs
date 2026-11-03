@@ -329,7 +329,13 @@ impl Storage {
             #[cfg(feature = "npu")]
             Self::Npu(storage) => {
                 let (inner, shape) = c.cpu_fwd(&storage.inner, l)?;
-                Ok((Self::Npu(crate::npu_backend::NpuStorage { inner, backend: crate::npu_backend::FallbackBackend::open_device(0).unwrap() }), shape))
+                Ok((
+                    Self::Npu(crate::npu_backend::NpuStorage {
+                        inner,
+                        backend: crate::npu_backend::FallbackBackend::open_device(0).unwrap(),
+                    }),
+                    shape,
+                ))
             }
         }
     }
@@ -364,7 +370,10 @@ impl Storage {
             (Self::Npu(s1), Self::Npu(s2)) => {
                 let (s, shape) = c.cpu_fwd(&s1.inner, l1, &s2.inner, l2)?;
                 Ok((
-                    Self::Npu(crate::npu_backend::NpuStorage { inner: s, backend: crate::npu_backend::FallbackBackend::open_device(0).unwrap() }),
+                    Self::Npu(crate::npu_backend::NpuStorage {
+                        inner: s,
+                        backend: crate::npu_backend::FallbackBackend::open_device(0).unwrap(),
+                    }),
                     shape,
                 ))
             }
@@ -405,7 +414,10 @@ impl Storage {
             (Self::Npu(s1), Self::Npu(s2), Self::Npu(s3)) => {
                 let (s, shape) = c.cpu_fwd(&s1.inner, l1, &s2.inner, l2, &s3.inner, l3)?;
                 Ok((
-                    Self::Npu(crate::npu_backend::NpuStorage { inner: s, backend: crate::npu_backend::FallbackBackend::open_device(0).unwrap() }),
+                    Self::Npu(crate::npu_backend::NpuStorage {
+                        inner: s,
+                        backend: crate::npu_backend::FallbackBackend::open_device(0).unwrap(),
+                    }),
                     shape,
                 ))
             }
