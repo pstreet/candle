@@ -374,6 +374,7 @@ impl Device {
             Self::Cpu => crate::bail!("expected a hip device, got cpu"),
             Self::Cuda(_) => crate::bail!("expected a hip device, got cuda"),
             Self::Metal(_) => crate::bail!("expected a hip device, got Metal"),
+            #[cfg(feature = "npu")]
             Self::Npu(_) => crate::bail!("expected a hip device, got Npu"),
         }
     }
